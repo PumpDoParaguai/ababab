@@ -52,3 +52,27 @@ A central reutiliza as rotas herdadas `GET notifications`, `GET offers?accepted=
 O formato da contraproposta nativa ainda não foi confirmado. O usuário foi solicitado a fornecer URL, método e Request Payload da ação Counter Offer. Até lá, o painel abre o anúncio no site oficial para essa operação. A rota antiga de negociação por mensagem permanece distinta da contraproposta formal.
 
 Para ícones, prioriza a URL retornada nos metadados da propriedade. Nomes de arquivos derivados são apenas alternativas; se falharem, usa SVGs locais, sem alegar que sejam os ícones oficiais. A conexão ao site nesta revisão retornou erro 403 do túnel do proxy antes de alcançar o Traderie.
+
+## Chat e Counter Offer — v2.3.0, 15/10/2026
+
+O arquivo público `https://traderie.com/assets/index-uqDPzEb-.js` voltou a responder HTTP 200 nesta sessão. A função de criação `pge` confirma `POST /api/<jogo>/offers`, compatível com o payload fornecido pelo usuário:
+
+- `listing`: ID do anúncio; `items: [{group: 0, nmt: <Shooms>, currency: true}]`; `bells: 0`, `nmt: 0`.
+- `seller` e `parent_user`: `offer.buyer.id` na contraproposta.
+- `parent_offer`: `offer.root_offer.id`, se existir; caso contrário, `offer.id`.
+- `last_offer`: `offer.id` atual; `amount`: quantidade para anúncios de estoque, `null` nos demais.
+- `touch_trading` e `need_materials`: `false` para a contraproposta em Shooms deste painel.
+- O cliente oficial trata resposta JSON HTTP 2xx sem `error` como conclusão dessa criação. Eventos `offer_created` pertencem à análise de uso e não são enviados pelo painel.
+
+Chat confirmado no mesmo arquivo:
+
+- `GET /conversations?active=true|false` lista conversas da conta.
+- `GET /messages?user=<destinatário>&convoId=<conversa>&limit=50` retorna mensagens da mais recente para a mais antiga; o painel inverte para leitura cronológica.
+- `POST /messages` recebe `{body: {to, content, conversation}}`. A resposta pode confirmar o envio por `messageId`.
+- `POST /conversations` recebe `to`, `toUsername` e `offer` para iniciar a conversa.
+- O limite padrão de texto no site é 500 caracteres; alguns papéis permitem 1000. O painel aplica 500.
+- O site utiliza Firebase, mas esta integração usa consulta HTTP periódica a cada 5 segundos enquanto a conversa está aberta, com recuo após falhas. Não promete entrega instantânea por socket.
+
+As consultas autenticadas `GET offers` e `GET conversations` da conta de teste retornaram HTTP 403. Isso não permite confirmar a validade do token nem o envio real. Não houve mensagens ou contrapropostas enviadas a outros usuários durante a validação. O token permaneceu apenas no processo de consulta e não foi salvo no projeto ou no pacote.
+
+Esta revisão substitui a pendência de contrato de contraproposta descrita na seção histórica da v2.2.0. O contrato foi confirmado; aceitação de envios reais continua sem validação.

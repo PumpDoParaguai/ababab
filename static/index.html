@@ -94,10 +94,12 @@
 </div></div>
 <div aria-hidden="true" class="modal-backdrop hidden" id="trade-chat-backdrop"><div class="modal trade-chat-modal" role="dialog" aria-modal="true" aria-labelledby="trade-chat-title">
  <div class="modal-top"><div><p class="eyebrow">CHAT DO TRADERIE</p><h2 id="trade-chat-title">Conversa da oferta</h2><small class="muted" id="trade-chat-subtitle">Conectando…</small></div><button class="secondary icon-button" id="trade-chat-close" type="button" aria-label="Fechar conversa">✕</button></div>
+ <p class="muted" id="trade-chat-offer-summary"></p>
  <div class="trade-chat-messages" id="trade-chat-messages" role="log" aria-live="polite"><p class="muted">Carregando mensagens…</p></div>
  <div class="trade-chat-tools"><button type="button" class="secondary" id="trade-chat-reload">↻ Atualizar conversa</button><button type="button" class="secondary hidden" id="trade-chat-start">Iniciar conversa</button></div>
- <div class="trade-chat-input"><label for="trade-chat-text">Mensagem ao usuário</label><textarea id="trade-chat-text" rows="3" maxlength="1500" placeholder="Escreva sua proposta de negociação…"></textarea><button id="trade-chat-send" type="button">Enviar mensagem</button></div>
- <p class="muted trade-chat-disclaimer">Este chat usa o serviço de mensagens do Traderie. Negociar por mensagem não altera uma oferta formalmente.</p><div class="status" role="status" id="trade-chat-status"></div>
+ <div class="trade-chat-input"><label for="trade-chat-text">Mensagem ao usuário</label><textarea id="trade-chat-text" rows="3" maxlength="500" placeholder="Escreva sua proposta de negociação…"></textarea><button id="trade-chat-send" type="button">Enviar mensagem</button></div>
+ <section class="trade-counter-editor hidden" id="trade-counter-editor" aria-labelledby="trade-counter-heading"><div><p class="eyebrow">CONTRAPROPOSTA OFICIAL</p><h3 id="trade-counter-heading">Proponha outro valor</h3><p class="muted">Envia uma Counter Offer vinculada a esta oferta, mantendo a quantidade do anúncio.</p></div><label for="trade-counter-shooms">Valor total em Shooms</label><div class="trade-counter-row"><input id="trade-counter-shooms" type="number" min="1" max="2147483647" step="1" placeholder="Ex.: 900000"/><button class="counter-button" id="trade-counter-send" type="button">Enviar contraproposta</button></div><div class="status" id="trade-counter-status" role="status"></div></section>
+ <p class="muted trade-chat-disclaimer">Mensagens e contrapropostas são ações distintas no Traderie. A conversa começa com as 50 mensagens mais recentes.</p><div class="status" role="status" id="trade-chat-status"></div>
  </div></div>
 <div aria-live="polite" class="ui-toast hidden" id="ui-toast" role="status"></div>
 <script defer="" src="/static/app.js"></script>

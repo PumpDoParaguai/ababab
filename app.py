@@ -95,6 +95,7 @@ class State:
         self.catalog_cache: dict = {}
         self.inbox = {}
         self.offer_actions = {}
+        self.chat_partners = {}
 
 
     def public(self) -> dict:
@@ -134,6 +135,8 @@ def offer_revision(offer):
 
 
 def to_json(obj: Any) -> Any:
+    if isinstance(obj, traderie.Conversation):
+        return {"conversationID": obj.conversationID, "userID": obj.userID}
     if isinstance(obj, traderie.Offer):
         return {**to_json(asdict(obj)), "revision": offer_revision(obj)}
     if is_dataclass(obj) and not isinstance(obj, type):
@@ -189,7 +192,7 @@ def api(fn: Callable) -> Callable:
         except traderie.Blocked as exc:
             return fail(str(exc), 503, blocked=True)
         except TraderieError as exc:
-            return fail(str(exc), 502)
+            return fail(str(exc), 502, retry_after=getattr(exc, "retry_after", None))
         except ValueError as exc:
             return fail(str(exc), 400)
     return wrapper
@@ -267,6 +270,7 @@ def connect(slug: str, username: str, raw_id: str, auth: Optional[str], minutes:
         S.listings_snapshot = S.listings_checked_at = None
         S.inbox = {}
         S.offer_actions = {}
+        S.chat_partners = {}
     AUTO_WAKE.set()
     _write_json(CONFIG_FILE, {"slug": client.slug, "username": username, "user_id": user_id, "check_minutes": minutes})
 
@@ -623,6 +627,7 @@ def api_clear_auth():
         S.auto_relist = False
         S.inbox = {}
         S.offer_actions = {}
+        S.chat_partners = {}
         for rotation in S.rotations:
             rotation["enabled"] = False
         save_rotations()
@@ -742,7 +747,7 @@ def inbox_public():
         offers = [o for o in S.inbox.get("offers", {}).get("items", []) if str(o["offerID"]) not in S.offer_actions]
         return {"ok": True, "notifications": notifications, "offers": offers, "sources": sources,
                 "unread_count": sum(n.get("read") is False for n in notifications), "poll_seconds":15,
-                "counter_supported": False}
+                "counter_supported": True}
 
 
 @app.get("/api/inbox")
@@ -1217,7 +1222,7 @@ def _resolve_offer_chat(client, uid: int, offer_id: int, kind: str):
         raise ValueError('Direção da oferta inválida.')
     offers = client.get_offers(to_seller=uid) if kind == 'received' else client.get_offers(from_user=uid)
     offer = offers.get(offer_id)
-    if offer is None:
+    if offer is None or (offer.sellerID if kind == "received" else offer.buyerID) != uid:
         raise ValueError('Oferta não encontrada entre suas negociações abertas.')
     partner = offer.buyerID if kind == 'received' else offer.sellerID
     partner_name = offer.buyerUsername if kind == 'received' else offer.sellerUsername
@@ -1226,48 +1231,75 @@ def _resolve_offer_chat(client, uid: int, offer_id: int, kind: str):
     return offer, partner, partner_name
 
 
+def _chat_context(client, uid, data):
+    """Validate membership on each read/write; an existing chat survives a closed offer."""
+    require_auth(client)
+    dialogs = client.get_conversations(True, uid)
+    dialogs.update({k: v for k, v in client.get_conversations(False, uid).items() if k not in dialogs})
+    if data.get('conversation_id'):
+        cid = positive_id(data.get('conversation_id'), 'ID da conversa')
+        partner = positive_id(data.get('user_id'), 'Usuário da conversa')
+        conversation = dialogs.get(partner)
+        if conversation is None or conversation.conversationID != cid:
+            raise ValueError('Conversa não encontrada nesta conta.')
+        return None, partner, '', conversation
+    oid = positive_id(data.get('offer_id'), 'ID da oferta')
+    kind = data.get('kind', 'received')
+    key = (oid, kind)
+    with S.lock:
+        saved = S.chat_partners.get(key) if S.client is client and S.user_id == uid else None
+    try:
+        offer, partner, username = _resolve_offer_chat(client, uid, oid, kind)
+    except ValueError:
+        if saved is None:
+            raise
+        # A previously verified negotiation may now be closed; keep its chat usable.
+        offer, (partner, username) = None, saved
+    with S.lock:
+        if S.client is client and S.user_id == uid:
+            S.chat_partners[key] = (partner, username)
+    return offer, partner, username, dialogs.get(partner)
+
+
 @app.get('/api/offers/chat')
 @api
 def api_offer_chat(client, uid):
-    offer_id = positive_id(request.args.get('offer_id'), 'ID da oferta')
-    kind = request.args.get('kind', 'received')
-    offer, partner, username = _resolve_offer_chat(client, uid, offer_id, kind)
-    dialogs = client.get_conversations(True, uid)
-    if partner not in dialogs:
-        dialogs.update(client.get_conversations(False, uid))
-    conversation = dialogs.get(partner)
+    offer, partner, username, conversation = _chat_context(client, uid, request.args)
     msgs = client.get_messages(partner, conversation.conversationID) if conversation else []
-    return jsonify({'ok':True, 'user_id':partner, 'username':username,
-       'conversation_id':conversation.conversationID if conversation else None,
-       'offer_id':offer.offerID, 'messages':to_json(msgs),
-       'note':None if conversation else 'Não há conversa aberta. Pode iniciar uma após confirmação.'})
+    with S.lock:
+        if S.client is not client or S.user_id != uid:
+            return fail('A conta mudou. Abra novamente a conversa.', 409)
+    return jsonify({'ok': True, 'user_id': partner, 'username': username,
+        'conversation_id': conversation.conversationID if conversation else None,
+        'offer': to_json(offer) if offer else None, 'messages': to_json(msgs)})
 
 
 @app.post('/api/offers/chat')
 @api
 def api_offer_chat_action(client, uid):
-    data=body()
-    offer_id=positive_id(data.get('offer_id'), 'ID da oferta')
-    kind=str(data.get('kind') or 'received')
-    offer, partner, username=_resolve_offer_chat(client, uid, offer_id, kind)
-    action=data.get('action')
-    if action=='start':
-        if data.get('confirm') is not True:
-            raise ValueError('Confirme antes de abrir uma conversa.')
-        dialogs=client.get_conversations(True,uid)
-        if partner not in dialogs:
-            client.open_conversation(partner,username,offer.offerID)
-        return jsonify({'ok':True,'message':'Solicitação de conversa enviada.'})
-    if action=='send':
-        message=str(data.get('message') or '').strip()
-        if not message or len(message)>1500:
-            raise ValueError('Escreva uma mensagem de até 1500 caracteres.')
-        dialogs=client.get_conversations(True,uid)
-        if partner not in dialogs:
-            raise ValueError('Abra uma conversa antes de enviar mensagens.')
-        client.send_message(partner,message)
-        return jsonify({'ok':True,'message':'Mensagem enviada.'})
-    raise ValueError('Ação de chat inválida.')
+    data = body()
+    # Prevent changing accounts halfway through a message submission.
+    with OFFER_ACTION_LOCK:
+        offer, partner, username, conversation = _chat_context(client, uid, data)
+        with S.lock:
+            if S.client is not client or S.user_id != uid:
+                return fail('A conta mudou. Abra novamente a conversa.', 409)
+        action = data.get('action')
+        if action == 'start':
+            if data.get('confirm') is not True:
+                raise ValueError('Confirme antes de abrir uma conversa.')
+            if conversation is None:
+                client.open_conversation(partner, username, positive_id(data.get("offer_id"), "ID da oferta"))
+            return jsonify({'ok': True, 'message': 'Solicitação de conversa enviada.'})
+        if action == 'send':
+            message = str(data.get('message') or '').strip()
+            if not message or len(message) > 500:
+                raise ValueError('Escreva uma mensagem de até 500 caracteres.')
+            if conversation is None:
+                raise ValueError('Abra uma conversa antes de enviar mensagens.')
+            client.send_message(partner, message, conversation)
+            return jsonify({'ok': True, 'message': 'Mensagem enviada.'})
+        raise ValueError('Ação de chat inválida.')
 
 
 @app.get("/api/offers")
@@ -1287,7 +1319,7 @@ def api_offer_action(client, uid):
     data = body()
     offer_id = int_field(data, "offer_id", "ID de oferta")
     action = data.get("action")
-    if action not in ("accept", "decline"):
+    if action not in ("accept", "decline", "counter"):
         raise ValueError("Ação inválida.")
     if data.get("confirm") is not True:
         raise ValueError("Confirme a ação sobre a oferta.")
@@ -1305,7 +1337,12 @@ def api_offer_action(client, uid):
                 return fail("A conta mudou. Atualize a central.", 409)
         if data.get("revision") != offer_revision(offer):
             return fail("A oferta mudou. Atualize a central e revise os valores antes de confirmar.", 409)
-        if action == "decline":
+        if action == "counter":
+            shooms = data.get("shooms")
+            if type(shooms) is not int or not 1 <= shooms <= 2147483647:
+                raise ValueError("Informe um valor inteiro de 1 a 2147483647 Shooms.")
+            client.counter_offer(offer, shooms)
+        elif action == "decline":
             reason = str(data.get("reason") or "").strip()[:200] or "the offer was too low"
             client.decline_offer(offer, reason)
         else:
@@ -1316,7 +1353,7 @@ def api_offer_action(client, uid):
                 S.listings_snapshot = None
                 if "offers" in S.inbox:
                     S.inbox["offers"]["next_check"] = None
-        return jsonify({"ok": True, "message": "Oferta aceita." if action == "accept" else "Oferta recusada."})
+        return jsonify({"ok": True, "message": {"accept": "Oferta aceita.", "decline": "Oferta recusada.", "counter": "Contraproposta enviada."}[action]})
     finally:
         OFFER_ACTION_LOCK.release()
 

@@ -1,10 +1,10 @@
-# Traderie CoS Assistant — v2.2.0
+# Traderie CoS Assistant — v2.3.0
 
 Painel local para anúncios de Creatures of Sonaria. Interface em português, preto neutro e azul. Projeto independente, não afiliado ao Traderie. GPL-3.0-or-later; derivado de `ImanolBarba/traderie-bot`.
 
 ## Iniciar no Windows
 
-**[Baixar Traderie CoS Assistant v2.2.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v2.2.0.zip)**
+**[Baixar Traderie CoS Assistant v2.3.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v2.3.0.zip)**
 
 1. Extraia o ZIP em uma pasta nova.
 2. Instale Python 3.10 ou superior e execute `INICIAR_WINDOWS.bat`.
@@ -73,8 +73,9 @@ O botão **Notificações**, no topo de Anúncios, abre a central da conta conec
 - Exibe as 50 notificações mais recentes e as ofertas abertas retornadas pelo serviço, com valores em Shooms, itens, grupos alternativos e quantidade solicitada, quando presentes na resposta.
 - Notifica novas atividades no painel, sem repetir avisos para o mesmo ID e sem avisar por todo o histórico ao conectar.
 - **Aceitar** e **Recusar** exigem confirmação. O servidor relê a oferta, confere a conta e compara os valores com a versão revisada; ofertas alteradas precisam ser revisadas novamente. Aceitar não envia uma mensagem automática.
-- **Mensagem** abre o chat existente. As notificações selecionadas podem ser marcadas como lidas no Traderie.
-- **Counter Offer no Traderie** abre o anúncio no site oficial. **A contraproposta nativa dentro do painel ainda está pendente**: falta confirmar URL, método e payload dessa ação. Não enviamos uma mensagem de chat fingindo ser contraproposta formal.
+- **Mensagem** abre o chat vinculado à oferta. Busca novas mensagens a cada 5 segundos enquanto aberto, sem apagar o rascunho ou deslocar sua leitura. Exibe inicialmente as 50 mensagens mais recentes; permite iniciar uma conversa e enviar texto de até 500 caracteres. As notificações selecionadas podem ser marcadas como lidas no Traderie.
+- **Counter Offer** abre a mesma conversa com um editor de contraproposta oficial em Shooms. Informe o valor e confirme: o envio usa `POST /offers`, mantém a quantidade da oferta e os vínculos com a negociação original. Não envia texto de chat automaticamente. Se a oferta mudou, atualize a conversa e revise os valores antes de confirmar novamente.
+- Falhas preservam o rascunho e as mensagens já carregadas. Consultas aguardam mais tempo após erros e respeitam `Retry-After`; autenticação ou bloqueio pausa a consulta. Envios não são repetidos automaticamente. Uma conversa já verificada permanece acessível na sessão após o encerramento da oferta.
 - Falhas mantêm os últimos dados com aviso de sincronização; autenticação/anti-bot pausa as consultas e HTTP 429 respeita `Retry-After`. Reconectar limpa o estado da conta anterior.
 
 ## Ícones e rótulos
@@ -89,7 +90,7 @@ Para acesso na nuvem, permita `traderie.com` e `cdn.nookazon.com` nas configura�
 
 **Validação desta versão:** 167 testes Python e 17 subtestes, testes JavaScript e testes de navegador cobrem ofertas, notificações, ações com valores revisados, ícones de reserva, preço fixo e agendamentos. O formato de preço fixo usa o payload real fornecido pelo usuário: `currencyGroupPrices: [{group: 0, nmt: valor, currency: true}]`, `acceptListingPrice: true` e `makeOffer: false`. Nesta revisão, o proxy do ambiente retornou 403 antes de alcançar o Traderie; escritas reais não foram executadas. As leituras de catálogo documentadas em TRADERIE_RESEARCH.md pertencem à validação anterior.
 
-A integração de contraproposta nativa ainda aguarda o contrato da requisição. O token fornecido não foi incorporado ao pacote. Imagens podem ser recusadas pelo CDN; nesse caso o painel mostra um marcador.
+Os contratos de chat e contraproposta foram conferidos no código público do Traderie e no payload fornecido. Na v2.3.0, as consultas autenticadas de ofertas e conversas retornaram HTTP 403; o envio real não foi validado. Os testes usam respostas simuladas. A contraproposta do painel oferece Shooms; itens, anexos, histórico anterior às 50 mensagens iniciais e eventos instantâneos via Firebase não estão incluídos. O token fornecido não foi incorporado ao pacote. Imagens recusadas pelo CDN usam os ícones locais de reserva.
 
 ## Desenvolvimento e testes
 

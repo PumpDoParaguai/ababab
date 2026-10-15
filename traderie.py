@@ -61,6 +61,7 @@ ENDPOINTS: Dict[str, Tuple[str, str, str]] = {
     "listings.create":      ("POST", "listings/create", "private"),
     "listings.delete":      ("POST", "sell", "private"),
     "notifications.read":   ("PUT", "notifications/read", "private"),
+    "offers.create":        ("POST", "offers", "private"),
     "offers.deny":          ("PUT", "offers/deny", "private"),
     "offers.accept":        ("PUT", "offers/accept", "private"),
     "conversations.create": ("POST", "conversations", "private"),
@@ -139,12 +140,14 @@ class Message:
     text: str
     fromID: int
     toID: int
+    created_at: Optional[str] = None
 
 
 @dataclass
 class Conversation:
     conversationID: int
     userID: int
+    payload: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -165,6 +168,9 @@ class Offer:
     buyer_reviews: Optional[int] = None
     buyer_rating: Optional[float] = None
     properties: dict = field(default_factory=dict)
+    root_offer_id: Optional[int] = None
+    stock: bool = False
+    stock_available: Optional[int] = None
 
 
 @dataclass
@@ -470,6 +476,9 @@ def parse_offer(raw: Dict[str, Any]) -> Optional[Offer]:
             amount=int(raw.get("amount") or listing.get("amount") or 1),
             itemID=int(listing["item"]["id"]),
             prices=offer_prices(raw),
+            root_offer_id=_int((raw.get("root_offer") or {}).get("id")) if isinstance(raw.get("root_offer"), dict) else _int(raw.get("root_offer")),
+            stock=listing.get("stock") is True,
+            stock_available=_int(listing.get("amount")),
             created_at=raw.get("created_at") if isinstance(raw.get("created_at"), str) else None,
             buyer_reviews=_int(raw["buyer"].get("reviews")),
             buyer_rating=optional_rating(raw["buyer"].get("rating")),
@@ -987,12 +996,15 @@ class TraderieClient:
         data = self._request("conversations", params={"active": "true" if active else "false"})
         out: Dict[int, Conversation] = {}
         for c in self._list(data, "conversations", "conversas"):
-            partner = next((_int(u) for u in c.get("users") or [] if _int(u) != own_user_id), None)
+            members = [_int(u) for u in c.get("users") or []]
+            if own_user_id not in members:
+                continue
+            partner = next((u for u in members if u is not None and u != own_user_id), None)
             cid = _int(c.get("id"))
             if partner is None or cid is None:
                 logger.warning("Conversa com formato inesperado: %r", c)
                 continue
-            out[partner] = Conversation(conversationID=cid, userID=partner)
+            out[partner] = Conversation(conversationID=cid, userID=partner, payload=c)
         return out
 
     def get_messages(self, from_user_id: int, conversation_id: int, limit: int = 50) -> List[Message]:
@@ -1001,10 +1013,12 @@ class TraderieClient:
         out = []
         for m in self._list(data, "messages", "mensagens"):
             try:
-                out.append(Message(msgID=m["id"], text=m["content"], toID=int(m["to"]), fromID=int(m["from"])))
+                out.append(Message(msgID=m["id"], text=m["content"], toID=int(m["to"]), fromID=int(m["from"]),
+                                   created_at=m.get("created_at")))
             except (KeyError, TypeError, ValueError):
                 logger.warning("Mensagem com formato inesperado: %r", m)
-        return out
+        # O endpoint entrega as mensagens mais recentes primeiro.
+        return list(reversed(out))
 
     # ---- escritas (sempre exigem token) ----------------------------------
     def set_status(self, status: str) -> None:
@@ -1056,10 +1070,31 @@ class TraderieClient:
         body = {"to": str(user_id), "toUsername": username, "offer": offer_id}
         self._require_ok(self._request("conversations.create", body=body), "Abrir conversa")
 
-    def send_message(self, user_id: int, text: str) -> None:
-        # O site envia o payload dentro de "body"; mantido como no bot original.
-        data = self._request("messages.send", body={"body": {"to": str(user_id), "content": text}})
-        self._require_ok(data, "Enviar mensagem")
+    def counter_offer(self, offer: Offer, shooms: int) -> None:
+        if type(shooms) is not int or not 1 <= shooms <= 2147483647:
+            raise ValueError("Informe um valor inteiro de 1 a 2147483647 Shooms.")
+        if offer.stock and (offer.stock_available is None or not 1 <= offer.amount <= offer.stock_available):
+            raise ValueError("A quantidade da oferta não está disponível no estoque. Atualize a negociação.")
+        data = self._request("offers.create", body={
+            "listing": str(offer.listingID), "touch_trading": False,
+            "need_materials": False, "amount": offer.amount if offer.stock else None,
+            "bells": 0, "nmt": 0,
+            "items": [{"group": 0, "nmt": shooms, "currency": True}],
+            "seller": str(offer.buyerID), "parent_user": str(offer.buyerID),
+            "parent_offer": offer.root_offer_id or offer.offerID, "last_offer": offer.offerID,
+        })
+        # O cliente oficial considera o JSON HTTP 2xx sem "error" como conclusão.
+        self._require_ok(data, "Enviar contraproposta", strict=False)
+
+    def send_message(self, user_id: int, text: str, conversation: Optional[Conversation] = None) -> None:
+        if not isinstance(text, str) or not text.strip() or len(text) > 500:
+            raise ValueError("Escreva uma mensagem de até 500 caracteres.")
+        payload = {"to": str(user_id), "content": text}
+        if conversation is not None:
+            payload["conversation"] = conversation.payload or {"id": conversation.conversationID}
+        data = self._request("messages.send", body={"body": payload})
+        if data.get("error") or not data.get("messageId"):
+            self._require_ok(data, "Enviar mensagem")
 
     def set_conversation_active(self, conversation_id: int, active: bool) -> None:
         data = self._request("conversations.update", body={"id": str(conversation_id), "active": active})

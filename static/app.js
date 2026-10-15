@@ -38,7 +38,6 @@ let offersCache = [];
 let editorCategory = "species";
 const MARKET_CATEGORIES = ["all","species","slots","plushies","palettes","other"];
 let tradeChatContext = null;
-let tradeChatRequest = 0;
 let audioContext = null;
 let audioEnabled = false;
 try { audioEnabled = localStorage.getItem('traderie.sound.enabled') === '1'; } catch (_) { /* navegação privada */ }
@@ -107,6 +106,7 @@ function applyState(s) {
   const identity=s.auth_set?`${s.slug}:${s.user_id}`:'';
   if(identity!==inboxIdentity){
     inboxIdentity=identity;inboxData=null;inboxSeen.clear();inboxInitialized=false;inboxFingerprint='';inboxNotificationFingerprint='';
+    if(tradeChatContext)closeOfferChat();
     $('inbox-badge').hidden=true;renderInbox();
     if(identity)setTimeout(()=>void syncInbox(),0);
   }
@@ -880,7 +880,7 @@ function renderIncomingOffer(o){
   const summary=offeredSummary(o), id=Number(o.offerID);
   const supported=inboxData?.counter_supported===true;
   const disabled=!state.auth_set||offerActionBusy;
-  return `<article class="incoming-offer" data-incoming-offer="${id}"><div class="incoming-heading"><strong>${esc(o.itemName)}</strong><span class="muted">${Number(o.amount)}×</span></div><div class="incoming-content"><div><p class="offer-label">VOCÊ RECEBE</p><strong class="offered-value">${esc(summary)}</strong><p class="offer-buyer">${esc(o.buyerUsername||'Comprador')}</p>${o.buyer_rating!=null||o.buyer_reviews!=null?`<small class="offer-rating">${o.buyer_rating!=null?'★ '+Number(o.buyer_rating).toLocaleString('pt-BR'):''} ${o.buyer_reviews!=null?'· '+Number(o.buyer_reviews)+' avaliações':''}</small>`:''}<div class="property-list">${propHtml({properties:o.properties||{}})}</div></div><div class="incoming-actions"><button class="secondary" data-offer-chat="${id}" data-offer-chat-kind="received" ${disabled?'disabled':''}>Mensagem</button><button data-inbox-action="accept" data-offer-id="${id}" ${disabled?'disabled':''}>Aceitar</button><button class="secondary" data-inbox-action="decline" data-offer-id="${id}" ${disabled?'disabled':''}>Recusar</button>${supported?`<button class="counter-button" data-native-counter="${id}" ${disabled?'disabled':''}>Counter Offer</button>`:`<a class="counter-button external-counter" href="https://traderie.com/creaturesofsonaria/listing/${Number(o.listingID)}" target="_blank" rel="noopener noreferrer" title="A contraproposta dentro do painel ainda não está disponível">Counter Offer no Traderie ↗</a>`}</div></div><small class="offer-date" ${o.created_at?`data-updated="${esc(o.created_at)}" data-time-prefix="Recebida "`:''}>${o.created_at?'Recebida '+esc(timeAgo(o.created_at)):''}</small><div class="counter-editor hidden" data-native-counter-box="${id}"><label for="counter-shooms-${id}">Sua contraproposta em Shooms</label><input id="counter-shooms-${id}" type="number" min="1" max="999999999" step="1"/><div class="actions"><button data-send-native-counter="${id}">Enviar contraproposta</button><button class="secondary" data-close-native-counter="${id}">Cancelar</button></div></div><div class="status" data-offer-action-status="${id}" role="status"></div></article>`;
+  return `<article class="incoming-offer" data-incoming-offer="${id}"><div class="incoming-heading"><strong>${esc(o.itemName)}</strong><span class="muted">${Number(o.amount)}×</span></div><div class="incoming-content"><div><p class="offer-label">VOCÊ RECEBE</p><strong class="offered-value">${esc(summary)}</strong><p class="offer-buyer">${esc(o.buyerUsername||'Comprador')}</p>${o.buyer_rating!=null||o.buyer_reviews!=null?`<small class="offer-rating">${o.buyer_rating!=null?'★ '+Number(o.buyer_rating).toLocaleString('pt-BR'):''} ${o.buyer_reviews!=null?'· '+Number(o.buyer_reviews)+' avaliações':''}</small>`:''}<div class="property-list">${propHtml({properties:o.properties||{}})}</div></div><div class="incoming-actions"><button class="secondary" data-offer-chat="${id}" data-offer-chat-kind="received" ${disabled?'disabled':''}>Mensagem</button><button data-inbox-action="accept" data-offer-id="${id}" ${disabled?'disabled':''}>Aceitar</button><button class="secondary" data-inbox-action="decline" data-offer-id="${id}" ${disabled?'disabled':''}>Recusar</button>${supported?`<button class="counter-button" data-native-counter="${id}" ${disabled?'disabled':''}>Counter Offer</button>`:`<a class="counter-button external-counter" href="https://traderie.com/creaturesofsonaria/listing/${Number(o.listingID)}" target="_blank" rel="noopener noreferrer" title="A contraproposta dentro do painel ainda não está disponível">Counter Offer no Traderie ↗</a>`}</div></div><small class="offer-date" ${o.created_at?`data-updated="${esc(o.created_at)}" data-time-prefix="Recebida "`:''}>${o.created_at?'Recebida '+esc(timeAgo(o.created_at)):''}</small><div class="status" data-offer-action-status="${id}" role="status"></div></article>`;
 }
 function offerById(id){return inboxData?.offers?.find(o=>Number(o.offerID)===id)||offersCache.find(o=>Number(o.offerID)===id);}
 function offerStatus(id,message,ok=false){document.querySelectorAll(`[data-offer-action-status="${id}"]`).forEach(el=>{el.textContent=message;el.className='status '+(ok?'ok':'err');});}
@@ -906,8 +906,24 @@ async function incomingAction(id,action){
     document.querySelectorAll('[data-send-native-counter]').forEach(b=>b.disabled=!state.auth_set);
   }
 }
-async function sendNativeCounter(id){
-  offerStatus(id,'Aguardando confirmação do formato de contraproposta do Traderie.');
+async function sendNativeCounter(){
+  const ctx=tradeChatContext, offer=ctx?.offer;
+  if(!offer||ctx.actionBusy||offerActionBusy)return;
+  const shooms=Number($('trade-counter-shooms').value);
+  if(!Number.isInteger(shooms)||shooms<1||shooms>2147483647)return say('trade-counter-status','Informe um valor inteiro válido em Shooms.');
+  if(!confirm(`Enviar contraproposta de ${shooms.toLocaleString('pt-BR')} Shooms por ${offer.amount}× ${offer.itemName} para ${offer.buyerUsername}?`))return;
+  ctx.actionBusy=true;offerActionBusy=true;$('trade-counter-send').disabled=true;
+  say('trade-counter-status','Enviando contraproposta…',true);
+  const d=await api('/api/offers/action','POST',{offer_id:offer.offerID,action:'counter',shooms,confirm:true,revision:offer.revision});
+  ctx.actionBusy=false;offerActionBusy=false;
+  if(ctx!==tradeChatContext)return;
+  $('trade-counter-send').disabled=false;
+  if(!d.ok)return say('trade-counter-status',d.error+' Atualize a oferta antes de tentar novamente.');
+  ctx.offer=null;$('trade-counter-editor').classList.add('hidden');
+  say('trade-chat-status',d.message,true);showToast(d.message,true);
+  if(inboxData){inboxData.offers=inboxData.offers.filter(o=>Number(o.offerID)!==Number(offer.offerID));inboxFingerprint='';renderInbox();}
+  offersCache=offersCache.filter(o=>Number(o.offerID)!==Number(offer.offerID));
+  await syncInbox();
 }
 function renderInbox(){
   const d=inboxData;
@@ -974,57 +990,97 @@ async function markRead(){
 setInterval(()=>void syncInbox(),5000);
 setInterval(()=>{const date=$('inbox-sync').dataset.inboxChecked;if(date)$('inbox-sync').textContent='Última sincronização '+timeAgo(date);},1000);
 
-// ---- Chat vinculado à oferta (API de mensagens confirmada no cliente) ----------
-async function showOfferChat(id, kind='received') {
-  tradeChatContext={id,kind};
+// ---- Chat oficial e contraproposta vinculada à negociação ---------------------
+async function showOfferChat(id, kind='received', counter=false) {
+  if(tradeChatContext)closeOfferChat();
+  const ctx={id,kind,focus:document.activeElement,offer:offerById(id),messages:new Map(),fingerprint:'',actionBusy:false};
+  tradeChatContext=ctx;
   $('trade-chat-backdrop').classList.remove('hidden');
   $('trade-chat-backdrop').setAttribute('aria-hidden','false');
-  $('trade-chat-text').value='';
-  $('trade-chat-title').textContent='Conversa da oferta #'+id;
+  $('trade-chat-text').value='';$('trade-chat-text').disabled=true;$('trade-chat-send').disabled=true;
+  $('trade-chat-start').classList.add('hidden');
+  $('trade-chat-title').textContent=ctx.offer?.itemName||'Conversa da oferta';
   $('trade-chat-subtitle').textContent='Verificando mensagens…';
-  $('trade-chat-close').focus();
-  uiTone();
+  $('trade-chat-offer-summary').textContent='';
+  $('trade-chat-messages').innerHTML='<p class="muted">Carregando mensagens do Traderie…</p>';
+  $('trade-counter-editor').classList.toggle('hidden',kind!=='received');
+  $('trade-counter-shooms').value='';$('trade-counter-send').disabled=true;
+  say('trade-chat-status','');say('trade-counter-status','');
+  $('trade-chat-close').focus();uiTone();
   await reloadOfferChat();
+  if(counter&&tradeChatContext===ctx)$('trade-counter-shooms').focus();
 }
 function closeOfferChat() {
-  tradeChatRequest++;
+  const ctx=tradeChatContext;
+  if(ctx)clearTimeout(ctx.timer);
   tradeChatContext=null;
   $('trade-chat-backdrop').classList.add('hidden');
   $('trade-chat-backdrop').setAttribute('aria-hidden','true');
+  $('trade-chat-messages').replaceChildren();$('trade-chat-text').value='';
+  if(ctx?.focus?.isConnected)ctx.focus.focus();
 }
-async function reloadOfferChat(){
-  if(!tradeChatContext)return;
-  const token=++tradeChatRequest;
-  const {id,kind}=tradeChatContext;
-  say('trade-chat-status','');
-  $('trade-chat-messages').innerHTML='<p class="muted">Carregando mensagens do Traderie…</p>';
-  const d=await api('/api/offers/chat?offer_id='+encodeURIComponent(id)+'&kind='+encodeURIComponent(kind));
-  if(token!==tradeChatRequest)return;
-  if(!d.ok){$('trade-chat-messages').innerHTML='<p class="muted">Mensagens indisponíveis.</p>';return fail('trade-chat-status',d);}
-  $('trade-chat-subtitle').textContent='Com '+(d.username||'#'+d.user_id);
-  const hasConvo=!!d.conversation_id;
-  $('trade-chat-start').classList.toggle('hidden',hasConvo);
-  $('trade-chat-send').disabled=!hasConvo;
-  $('trade-chat-text').disabled=!hasConvo;
-  $('trade-chat-messages').innerHTML=hasConvo ? (d.messages||[]).map(m=>{
-     const incoming=Number(m.fromID)===Number(d.user_id);
-     return `<div class="trade-bubble ${incoming?'incoming':'outgoing'}"><small>${incoming?esc(d.username||'Contato'):'Você'}</small><p>${esc(m.text)}</p></div>`;
-  }).join('') || '<p class="muted">Nenhuma mensagem nesta conversa.</p>' : '<p class="muted">Ainda não há uma conversa para esta oferta. Inicie-a para negociar usando o chat do Traderie.</p>';
-  $('trade-chat-messages').scrollTop=$('trade-chat-messages').scrollHeight;
+function chatParams(ctx){
+  return {offer_id:ctx.id,kind:ctx.kind,...(ctx.conversation_id?{conversation_id:ctx.conversation_id,user_id:ctx.user_id}:{})};
+}
+async function reloadOfferChat(refreshOffer=false){
+  const ctx=tradeChatContext;
+  if(!ctx||ctx.loading)return;
+  clearTimeout(ctx.timer);ctx.loading=true;
+  const d=await api('/api/offers/chat?'+new URLSearchParams(refreshOffer?{offer_id:ctx.id,kind:ctx.kind}:chatParams(ctx)));
+  ctx.loading=false;
+  if(ctx!==tradeChatContext)return;
+  let delay=5000;
+  if(!d.ok){
+    ctx.failures=(ctx.failures||0)+1;
+    delay=Math.max(Math.min(60000,5000*2**Math.min(ctx.failures,4)),Number(d.retry_after||0)*1000);
+    $('trade-chat-subtitle').textContent='Sincronização interrompida; mensagens anteriores preservadas.';
+    fail('trade-chat-status',d);
+    if(d.auth_required||d.blocked)return;
+  }else{
+    ctx.failures=0;ctx.username=d.username||ctx.username||'Contato';
+    ctx.conversation_id=d.conversation_id;ctx.user_id=d.user_id;
+    if(d.offer||refreshOffer){
+      ctx.offer=d.offer;
+      $('trade-counter-send').disabled=ctx.actionBusy||!d.offer;
+      $('trade-counter-editor').classList.toggle('hidden',ctx.kind!=='received'||!d.offer);
+    }
+    $('trade-chat-offer-summary').textContent=ctx.offer?'Oferta recebida: '+offeredSummary(ctx.offer)+' · '+ctx.offer.amount+'× '+ctx.offer.itemName:'';
+    $('trade-chat-subtitle').textContent='Com '+ctx.username+' · Atualiza a cada 5 s';
+    const hasConvo=!!d.conversation_id;
+    $('trade-chat-start').classList.toggle('hidden',hasConvo);
+    $('trade-chat-send').disabled=!hasConvo||ctx.actionBusy;
+    $('trade-chat-text').disabled=!hasConvo;
+    for(const m of d.messages||[])ctx.messages.set(String(m.msgID),m);
+    const messages=[...ctx.messages.values()];
+    // Stable ordering; the client already orders undated messages chronologically.
+    messages.sort((a,b)=>a.created_at&&b.created_at?Date.parse(a.created_at)-Date.parse(b.created_at):0);
+    const fingerprint=JSON.stringify([hasConvo,messages]);
+    if(ctx.fingerprint!==fingerprint){
+      const log=$('trade-chat-messages'),nearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<60;
+      const previous=log.scrollTop,first=!ctx.fingerprint;ctx.fingerprint=fingerprint;
+      log.innerHTML=hasConvo ? messages.map(m=>{
+        const incoming=Number(m.fromID)===Number(d.user_id);
+        return `<div class="trade-bubble ${incoming?'incoming':'outgoing'}"><small>${incoming?esc(ctx.username):'Você'}${m.created_at?' · '+esc(new Date(m.created_at).toLocaleString('pt-BR')):''}</small><p>${esc(m.text)}</p></div>`;
+      }).join('')||'<p class="muted">Nenhuma mensagem nesta conversa.</p>':'<p class="muted">Inicie a conversa para enviar mensagens pelo Traderie.</p>';
+      log.scrollTop=first||nearBottom?log.scrollHeight:previous;
+    }
+  }
+  ctx.timer=setTimeout(()=>{if(ctx===tradeChatContext)void reloadOfferChat();},delay);
 }
 async function offerChatAction(action){
-  if(!tradeChatContext)return;
-  const {id,kind}=tradeChatContext;
-  const message=$('trade-chat-text').value.trim();
-  if(action==='send'&&!message)return say('trade-chat-status','Digite uma mensagem.');
+  const ctx=tradeChatContext;if(!ctx||ctx.actionBusy)return;
+  const draft=$('trade-chat-text').value, message=draft.trim();
+  if(action==='send'&&(!message||message.length>500))return say('trade-chat-status','Escreva uma mensagem de até 500 caracteres.');
   if(action==='start'&&!confirm('Iniciar uma conversa do Traderie com o usuário desta oferta?'))return;
-  const btn=action==='send' ? $('trade-chat-send') : $('trade-chat-start');
-  btn.disabled=true;
-  const d=await api('/api/offers/chat','POST',{offer_id:id,kind,action,confirm:action==='start',message});
+  const btn=action==='send'?$('trade-chat-send'):$('trade-chat-start');
+  ctx.actionBusy=true;btn.disabled=true;
+  const d=await api('/api/offers/chat','POST',{...chatParams(ctx),action,confirm:action==='start',message});
+  ctx.actionBusy=false;
+  if(ctx!==tradeChatContext)return;
   btn.disabled=false;
   if(!d.ok)return fail('trade-chat-status',d);
-  if(action==='send')$('trade-chat-text').value='';
-  showToast(d.message||'Concluído.',true);
+  if(action==='send'&&$('trade-chat-text').value===draft)$('trade-chat-text').value='';
+  say('trade-chat-status',d.message||'Concluído.',true);
   await reloadOfferChat();
 }
 
@@ -1166,7 +1222,7 @@ document.addEventListener("click", (e) => {
   else if (t.id === 'trade-chat-close') closeOfferChat();
   else if (t.id === 'trade-chat-start') offerChatAction('start');
   else if (t.id === 'trade-chat-send') offerChatAction('send');
-  else if (t.id === 'trade-chat-reload') reloadOfferChat();
+  else if (t.id === 'trade-chat-reload') reloadOfferChat(true);
   else if (t.dataset.page) navigate(t.dataset.page);
   else if (t.id === "menu-toggle") $("sidebar").classList.toggle("open");
   else if (t.id === "modal-close" || t.id === "modal-cancel") closeGroupModal();
@@ -1184,9 +1240,8 @@ document.addEventListener("click", (e) => {
   else if (t.id==='inbox-read')markRead();
   else if (d.noticeListing)openListingOffers(Number(d.noticeListing));
   else if (d.inboxAction)incomingAction(Number(d.offerId),d.inboxAction);
-  else if (d.nativeCounter)t.closest('.incoming-offer').querySelector('.counter-editor').classList.remove('hidden');
-  else if (d.closeNativeCounter)t.closest('.counter-editor').classList.add('hidden');
-  else if (d.sendNativeCounter)sendNativeCounter(Number(d.sendNativeCounter));
+  else if (d.nativeCounter)showOfferChat(Number(d.nativeCounter),'received',true);
+  else if (t.id==='trade-counter-send')sendNativeCounter();
   else if (d.marketTab) switchMarketTab(d.marketTab);
   else if (t.id === 'schedule-add') openEditor(null,'schedule');
   else if (t.id === 'schedule-save') saveSchedule();

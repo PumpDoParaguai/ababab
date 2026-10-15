@@ -24,3 +24,6 @@ button{transition:transform .18s ease,box-shadow .2s ease,background .2s ease,bo
 @media(max-width:600px){.market-navigation{flex-wrap:wrap;gap:4px;padding-bottom:14px}.market-navigation .market-tabs{width:100%;flex-basis:100%;padding-bottom:5px}.inbox-button{font-size:11px;padding:8px 12px;margin-left:auto}.incoming-content{grid-template-columns:1fr;gap:16px}.incoming-actions{grid-template-columns:1fr 1fr}.incoming-offer{padding:14px}.incoming-heading strong{font-size:14px}.offered-value{font-size:14px}}
 
 .external-counter{display:block;text-align:center;padding:8px 12px;border-radius:18px;font-size:11px;line-height:1.4;text-decoration:none}.external-counter:hover{text-decoration:none;background:#6165df!important}
+
+/* Chat and official counter share the same negotiation context. */
+.trade-counter-editor{margin-top:20px;padding:18px;background:#151515;border:1px solid #355c9d;border-radius:12px}.trade-counter-editor h3{margin:3px 0 8px}.trade-counter-editor p{font-size:12px}.trade-counter-row{display:flex;gap:10px;align-items:center}.trade-counter-row input{flex:1;min-width:0}.trade-counter-row button{flex-shrink:0}.trade-bubble p{white-space:pre-wrap;overflow-wrap:anywhere}.trade-counter-editor .eyebrow{color:#83acff}@media(max-width:600px){.trade-counter-row{flex-direction:column;align-items:stretch}.trade-counter-row input{width:100%}}
