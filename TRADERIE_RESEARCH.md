@@ -36,3 +36,11 @@ As leituras públicas de perfil e anúncios da conta de teste responderam; a lis
 ## Limitações
 
 Os testes offline e de navegador cobrem os contratos e casos de falha; não garantem que uma escrita real será aceita. Houve bloqueios de rede/Cloudflare em requisições iniciais, e o acesso funcionou nas consultas finais usando o cliente do projeto. Não há contorno de CAPTCHA ou anti-bot. Imagens do CDN podem falhar e têm fallback visual.
+
+## Preço fixo — contrato recebido em 15/10/2026
+
+O usuário forneceu o payload de `listings/create` para uma publicação de preço fixo no próprio Traderie. Campos específicos: `acceptListingPrice: true`, `makeOffer: false`, `free: false`, `currencyGroupPrices: [{group: 0, nmt: 10000000, currency: true}]`. O tipo é `Creatures`; a propriedade espécie/slot usa o ID retornado pelo catálogo (828 no exemplo). Na API compartilhada, Shooms utiliza a chave `nmt`.
+
+A v2.1.0 preserva esse formato e valida um único valor positivo inteiro. Ao escolher ofertas, omite `currencyGroupPrices` e envia `acceptListingPrice: false`, `makeOffer: true`. Não consulta valores de mercado.
+
+Durante esta revisão, consultas ao Traderie falharam no túnel do proxy com HTTP 403, antes de autenticação ou resposta do site. A autorização do usuário para criar/excluir na conta de teste foi recebida, mas não houve execução dessas escritas reais. Contratos e ciclos foram validados com respostas simuladas; as leituras reais descritas nas seções anteriores são da revisão v2.0.0.

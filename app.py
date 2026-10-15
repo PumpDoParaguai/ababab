@@ -90,6 +90,7 @@ class State:
         self.relist_success: dict = {}  # timestamp da última publicação aceita (por anúncio)
         self.rotations: list[dict] = []
         self.rotation_owner: str = ""
+        self.rotation_not_before = None
         self.catalog_cache: dict = {}
 
     def public(self) -> dict:
@@ -103,7 +104,7 @@ class State:
                 "auth_set": bool(c and c.has_auth),
                 "policy": dict(c.policy) if c else traderie.default_policy(),
                 "auto_relist": self.auto_relist,
-                "availability_poll_seconds": 30,
+                "availability_poll_seconds": 10,
                 "next_auto_run": self.next_auto_run.isoformat() if self.next_auto_run else None,
                 "check_minutes": self.check_minutes,
                 "last_auto_run": self.last_auto_run.isoformat() if self.last_auto_run else None,
@@ -234,16 +235,18 @@ def connect(slug: str, username: str, raw_id: str, auth: Optional[str], minutes:
 
     auto = want_auto and client.has_auth  # automação exige token
     owner = f"{client.slug}:{user_id}"
-    with S.lock:
+    with WRITE_LOCK, S.lock:
         # Não reutiliza rotinas de outra conta. Nunca reativa após reconectar.
         if S.rotation_owner != owner:
             stored = _read_json(ROTATIONS_FILE)
             candidates = stored.get("routines", []) if stored.get("owner") == owner else []
-            S.rotations = [dict(x, enabled=False) for x in candidates if isinstance(x, dict)]
+            S.rotations = [dict(x, enabled=False, running=False) for x in candidates if isinstance(x, dict)]
+            S.rotation_not_before = traderie.parse_updated(stored.get("not_before")) if stored.get("owner") == owner else None
             S.rotation_owner = owner
         else:
             for r in S.rotations:
                 r["enabled"] = False
+                r["running"] = False
         S.client, S.user_id, S.username = client, user_id, username
         S.auto_relist, S.check_minutes = auto, minutes
         S.relist_attempts.clear()
@@ -285,8 +288,8 @@ def remember_listings(client, user_id, listings):
 
 
 def next_availability_check(listings, now):
-    """Poll at most every 30s; a nearer server deadline wakes the worker earlier."""
-    deadline = now + dt.timedelta(seconds=30)
+    """Poll every 10s; a nearer server deadline wakes the worker earlier."""
+    deadline = now + dt.timedelta(seconds=10)
     for listing in listings.values():
         available = traderie.parse_updated(listing.refresh_available_at)
         if available and now < available < deadline:
@@ -311,15 +314,16 @@ def run_relist(client: TraderieClient, user_id: int, *, automatic=False) -> dict
                     break
                 if listing.can_refresh is False:
                     S.relist_success.pop(key, None)  # a new availability cycle
+            with S.lock:
+                managed = {n for r in S.rotations if r.get("enabled") for n in r.get("owned_ids", [])}
+            if lid in managed:
+                continue
             if not traderie.is_listing_relistable(listing, now):
                 if listing.can_refresh is None and listing.refresh_available_at is None:
                     unknown += 1
                 continue
             with S.lock:
                 if key in S.relist_success and S.relist_success[key] == listing.updated:
-                    continue
-                previous = S.relist_attempts.get(key)
-                if previous and now - previous < dt.timedelta(seconds=30):
                     continue
                 S.relist_attempts[key] = now
             try:
@@ -362,7 +366,7 @@ def auto_loop() -> None:
             AUTO_WAKE.wait(min(30, max(.1, (deadline-now).total_seconds())) if enabled else 30)
             AUTO_WAKE.clear()
             continue
-        next_check = now + dt.timedelta(seconds=30)
+        next_check = now + dt.timedelta(seconds=10)
         try:
             result = run_relist(client, uid, automatic=True)
             next_check = traderie.parse_updated(result['next_check'])
@@ -402,7 +406,8 @@ MIN_ROTATION_MINUTES = 15
 
 def save_rotations() -> None:
     with S.lock:
-        _write_json(ROTATIONS_FILE, {"owner": S.rotation_owner, "routines": S.rotations})
+        _write_json(ROTATIONS_FILE, {"owner": S.rotation_owner, "routines": S.rotations,
+                                    "not_before": S.rotation_not_before.isoformat() if S.rotation_not_before else None})
 
 
 def rotation_public(r: dict) -> dict:
@@ -432,9 +437,11 @@ def delete_owned(client: TraderieClient, uid: int, lid: int) -> None:
     client.delete_listing(lid)
 
 
-def create_and_identify(client: TraderieClient, uid: int, template: dict) -> int:
+def create_and_identify(client: TraderieClient, uid: int, template: dict, before_create=None) -> int:
     """Identifica anúncio novo sem repetir o POST quando a resposta for ambígua."""
     current = existing_owned(client, uid)
+    if before_create:
+        before_create()
     new_id = client.create_listing(template)
     if new_id is not None:
         return new_id
@@ -455,90 +462,115 @@ def rotation_next(minutes: int) -> str:
     return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=minutes)).isoformat()
 
 
-def execute_rotation(client: TraderieClient, uid: int, rotation_id: str) -> dict:
-    """Cria um anúncio e só então remove os IDs que a própria rotina gerou.
+def rotation_is_current(client, uid, routine):
+    return (S.client is client and S.user_id == uid and routine in S.rotations
+            and routine.get("enabled") and not STOP.is_set())
 
-    Se qualquer etapa ficar incerta, pausa para evitar duplicatas ou remoções erradas.
+
+def execute_rotation(client: TraderieClient, uid: int, rotation_id: str) -> dict:
+    """Delete only this routine's previous listing, then create its exact template.
+
+    All queued publications share a 60-second gate. Never retry an ambiguous write.
+    Check pause/account changes before each irreversible step.
     """
     if not WRITE_LOCK.acquire(blocking=False):
-        raise TraderieError("Outra operação de criação/exclusão está em andamento.")
+        return {"ok": True, "deferred": True}
     try:
         require_auth(client)
         with S.lock:
             routine = next((r for r in S.rotations if r["id"] == rotation_id), None)
             if routine is None:
-                raise ValueError("Rotina não encontrada.")
-            template = traderie.validated_creation(routine["template"])
+                raise ValueError("Agendamento não encontrado.")
+            if not rotation_is_current(client, uid, routine):
+                return {"ok": True, "paused": True}
+            now = dt.datetime.now(dt.timezone.utc)
+            due = traderie.parse_updated(routine.get("next_run")) or now
+            gate = S.rotation_not_before or now
+            if max(due, gate) > now:
+                return {"ok": True, "deferred": True}
+            routine["running"] = True
             previous = list(routine.get("owned_ids", []))
-            routine["next_run"] = rotation_next(routine["interval_minutes"])
-            routine["last_run"] = dt.datetime.now(dt.timezone.utc).isoformat()
-            routine["last_result"] = "Executando…"
+            routine["last_result"] = "Excluindo anterior e publicando…" if previous else "Publicando…"
             save_rotations()
         try:
-            # Uma rotação segura exige no máximo um anúncio controlado ativo.
+            template = traderie.validated_creation(routine["template"])
             if len(previous) > 1:
-                raise TraderieError("Mais de um anúncio rastreado; revisão manual necessária.")
-            created = create_and_identify(client, uid, template)
-            with S.lock:
-                routine["owned_ids"] = previous + [created]
-                save_rotations()
+                raise TraderieError("Mais de um anúncio rastreado; revise antes de continuar.")
             removed = 0
             if previous:
                 own = existing_owned(client, uid)
                 for lid in previous:
+                    with S.lock:
+                        if not rotation_is_current(client, uid, routine):
+                            return {"ok": True, "paused": True}
                     if lid in own:
                         client.delete_listing(lid)
                         removed += 1
+                    with S.lock:
+                        routine["owned_ids"] = []
+                        save_rotations()
             with S.lock:
-                routine["owned_ids"] = [created]
-                routine["last_result"] = f"Criado #{created}; {removed} anterior(es) removido(s)."
+                if not rotation_is_current(client, uid, routine):
+                    return {"ok": True, "paused": True}
+                # Reserve the slot before sending; a failed/ambiguous POST also consumes it.
+                S.rotation_not_before = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=60)
                 save_rotations()
-            return {"ok": True, "created_id": created, "removed": removed,
-                    "message": routine["last_result"]}
-        except (TraderieError, ValueError) as exc:
+            def still_active():
+                with S.lock:
+                    if not rotation_is_current(client, uid, routine):
+                        raise ValueError("Agendamento interrompido antes da publicação")
+            created = create_and_identify(client, uid, template, before_create=still_active)
+            with S.lock:
+                finished = dt.datetime.now(dt.timezone.utc)
+                S.rotation_not_before = finished + dt.timedelta(seconds=60)
+                routine["owned_ids"] = [created]
+                routine["last_run"] = finished.isoformat()
+                routine["next_run"] = (finished + dt.timedelta(minutes=routine["interval_minutes"])).isoformat()
+                routine["cycles"] = routine.get("cycles", 0) + 1
+                routine["last_result"] = "Publicado; aguardando próximo ciclo." if routine["enabled"] else "Publicado; agendamento interrompido."
+                S.listings_snapshot = None
+                save_rotations()
+            return {"ok": True, "created_id": created, "removed": removed, "message": routine["last_result"]}
+        except Exception as exc:
             with S.lock:
                 routine["enabled"] = False
-                routine["last_result"] = f"Pausada: {str(exc)[:350]}"
+                routine["last_result"] = f"Pausado: {str(exc)[:350]}. Confira os anúncios antes de retomar."
+                if isinstance(exc, (AuthRequired, traderie.Blocked)):
+                    for row in S.rotations:
+                        row["enabled"] = False
+                if isinstance(exc, TraderieError) and exc.status == 429:
+                    S.rotation_not_before = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=max(60, getattr(exc, 'retry_after', 60)))
                 save_rotations()
             raise
+        finally:
+            with S.lock:
+                routine["running"] = False
+                save_rotations()
     finally:
         WRITE_LOCK.release()
 
 
+def run_rotation_tick():
+    """One due item per tick; overdue items retain chronological order."""
+    with S.lock:
+        c, uid = S.client, S.user_id
+        now = dt.datetime.now(dt.timezone.utc)
+        due = sorted((r for r in S.rotations if r.get("enabled")),
+                     key=lambda r: traderie.parse_updated(r.get("next_run")) or now)
+        if c is None or uid is None or not due:
+            return
+        rid = due[0]["id"]
+    return execute_rotation(c, uid, rid)
+
+
 def rotation_loop() -> None:
-    """Worker separado; não inicia por importação nem reativa rotinas ao reiniciar."""
-    while not STOP.wait(10):
-        with S.lock:
-            c, uid = S.client, S.user_id
-            now = dt.datetime.now(dt.timezone.utc)
-            due = []
-            for r in S.rotations:
-                try:
-                    when = dt.datetime.fromisoformat(r.get("next_run") or "")
-                    if when.tzinfo is None:
-                        when = when.replace(tzinfo=dt.timezone.utc)
-                except (ValueError, TypeError):
-                    when = now
-                if r.get("enabled") and when <= now:
-                    due.append(r["id"])
-        if c is None or uid is None:
-            continue
-        for rid in due:
-            with S.lock:
-                if S.client is not c or S.user_id != uid:
-                    break
-            try:
-                execute_rotation(c, uid, rid)
-            except (TraderieError, ValueError) as exc:
-                log.warning("Rotina %s pausada/falhou: %s", rid[:8], exc)
-            except Exception:
-                log.exception("Erro inesperado na rotina %s", rid[:8])
-                with S.lock:
-                    row = next((r for r in S.rotations if r["id"] == rid), None)
-                    if row:
-                        row["enabled"] = False
-                        row["last_result"] = "Pausada: erro inesperado (ver terminal)."
-                        save_rotations()
+    while not STOP.wait(0.5):
+        try:
+            run_rotation_tick()
+        except (TraderieError, ValueError) as exc:
+            log.warning("Agendamento pausado: %s", exc)
+        except Exception:
+            log.exception("Falha no agendamento")
 
 
 # --------------------------------------------------------------------------
@@ -868,7 +900,8 @@ def api_bulk_delete(client, uid):
 @api
 def api_get_rotations(client, uid):
     with S.lock:
-        return jsonify({"ok": True, "routines": [rotation_public(r) for r in S.rotations]})
+        return jsonify({"ok": True, "routines": [rotation_public(r) for r in S.rotations],
+                        "queue_not_before": S.rotation_not_before.isoformat() if S.rotation_not_before else None})
 
 
 @app.post("/api/rotation-routines")
@@ -894,6 +927,67 @@ def api_new_rotation(client, uid):
     return jsonify({"ok": True, "routine": rotation_public(r)})
 
 
+@app.post("/api/rotation-routines/batch")
+@api
+def api_rotation_batch(client, uid):
+    require_auth(client)
+    data = body()
+    items = data.get("items")
+    if not isinstance(items, list) or not 1 <= len(items) <= 20:
+        raise ValueError("Adicione entre 1 e 20 itens à fila.")
+    minutes = positive_id(data.get("interval_minutes", 60), "Intervalo")
+    if not MIN_ROTATION_MINUTES <= minutes <= 1440:
+        raise ValueError("Intervalo de 15 a 1440 minutos.")
+    rows = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Item de agendamento inválido.")
+        name = str(item.get("item_name") or "").strip()
+        if not 1 <= len(name) <= 160:
+            raise ValueError("Informe o nome de cada item.")
+        rows.append({"id": uuid.uuid4().hex, "item_name": name,
+                     "template": traderie.validated_creation(item.get("template")),
+                     "interval_minutes": minutes, "enabled": False, "owned_ids": [],
+                     "next_run": None, "last_run": None, "last_result": "Pronto para iniciar.", "cycles": 0})
+    with S.lock:
+        if len(S.rotations) + len(rows) > 20:
+            raise ValueError("Máximo de 20 itens agendados por conta.")
+        S.rotations.extend(rows)
+        save_rotations()
+    return jsonify({"ok": True, "routines": rows})
+
+
+@app.post("/api/rotation-routines/control")
+@api
+def api_rotation_control(client, uid):
+    data = body()
+    action = data.get("action")
+    if action not in ("start", "stop"):
+        raise ValueError("Comando inválido.")
+    if action == "start":
+        require_auth(client)
+        if data.get("confirm") is not True:
+            raise ValueError("Confirme a publicação e exclusão recorrentes.")
+    with S.lock:
+        now = dt.datetime.now(dt.timezone.utc)
+        next_slot = max(now, S.rotation_not_before or now)
+        for row in S.rotations:
+            if action == "stop":
+                row["enabled"] = False
+                row["last_result"] = "Interrompido. Anúncio existente preservado."
+            elif not row.get("enabled"):
+                row["enabled"] = True
+                # On resume respect the last successful publication's lifetime.
+                last = traderie.parse_updated(row.get("last_run"))
+                earliest = last + dt.timedelta(minutes=row["interval_minutes"]) if last and row.get("owned_ids") else now
+                next_slot = max(next_slot, earliest)
+                row["next_run"] = next_slot.isoformat()
+                next_slot += dt.timedelta(seconds=60)
+                row["last_result"] = "Na fila de publicação."
+        save_rotations()
+    return jsonify({"ok": True})
+
+
 @app.post("/api/rotation-routines/action")
 @api
 def api_rotation_action(client, uid):
@@ -912,21 +1006,28 @@ def api_rotation_action(client, uid):
                 raise ValueError("Confirme a ativação/execução da rotina.")
         if action == "enable":
             row["enabled"] = True
-            row["next_run"] = rotation_next(row["interval_minutes"])
+            now = dt.datetime.now(dt.timezone.utc)
+            last = traderie.parse_updated(row.get("last_run"))
+            earliest = last + dt.timedelta(minutes=row["interval_minutes"]) if last and row.get("owned_ids") else now
+            row["next_run"] = max(now, earliest, S.rotation_not_before or now).isoformat()
             row["last_result"] = "Ativa; aguardando próximo ciclo."
         elif action == "pause":
             row["enabled"] = False
             row["last_result"] = "Pausada manualmente."
         elif action == "remove":
-            if row["enabled"]:
-                raise ValueError("Pause a rotina antes de removê-la.")
+            if row["enabled"] or row.get("running"):
+                raise ValueError("Pause e aguarde a operação em andamento antes de remover.")
             if data.get("confirm") is not True:
                 raise ValueError("Confirme a remoção da configuração.")
             S.rotations.remove(row)  # anúncios já criados NÃO são excluídos.
         save_rotations()
     if action == "run_now":
-        return jsonify(execute_rotation(client, uid, rid))
-    return jsonify({"ok": True, "routines": [rotation_public(r) for r in S.rotations]})
+        with S.lock:
+            row["enabled"] = True
+            row["next_run"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            save_rotations()
+    return jsonify({"ok": True, "routines": [rotation_public(r) for r in S.rotations],
+                        "queue_not_before": S.rotation_not_before.isoformat() if S.rotation_not_before else None})
 
 
 # The catalog works without an account and never reads the seller's inventory.

@@ -1,15 +1,15 @@
-# Validação da v2.0.0
+# Validação da v2.1.0
 
-Ambiente de desenvolvimento: Linux, Python 3.12, Node 24 e Chromium. Data: 15/10/2026.
+Ambiente: Linux, Python 3.12, Node e Chromium. Data: 15/10/2026.
 
-- 114 testes Python e 17 subtestes aprovados.
-- Teste de ícones, traits e URLs no Node aprovado.
-- Teste de navegador com API simulada aprovado: desktop/celular, seleção, payload de publicação, filtros de categoria, recuperação de falhas, relógio ao vivo e teclado.
-- Catálogo oficial consultado ao vivo: espécies, plushies, paletas, pesquisa por nome e paginação de 24 para 48 itens.
-- Formulário real de Mijusuima validado sem publicar: tipo `Creatures`, propriedade espécie/slot `828` e mutação Glow Tail `135`.
-- Dependências instaladas a partir dos arquivos fixados; `pip check` sem inconsistências.
-- API Flask local e interface responderam HTTP 200.
+- 148 testes Python e 17 subtestes aprovados.
+- Fila validada com relógio controlado: publicação inicial, separação mínima de 60 segundos, repetição a cada hora, exclusão antes da criação e modelos idênticos entre ciclos.
+- Casos de atraso, pausa durante leitura/exclusão/criação, retomada, reinício, concorrência de remoção, limitação HTTP e falhas de escrita cobertos.
+- Preço fixo validado contra o payload fornecido pelo usuário, incluindo a chave `currencyGroupPrices` e valores inválidos; preço preservado em ciclos sucessivos.
+- Teste Node de ícones e URLs aprovado.
+- Teste Chromium com APIs simuladas: oferta/preço fixo, validação do formulário, fila pelo catálogo, propriedades preservadas, iniciar/interromper, contadores, categorias, recuperação de erros, teclado e layouts desktop/celular. Animações e preferência de movimento reduzido conferidas.
+- `pip check` sem inconsistências. A interface e `/api/state` respondem HTTP 200 localmente.
 
-Publicações e republicações reais não foram executadas. A consulta pública dos anúncios da conta de teste retornou uma lista vazia. O token não foi incluído no pacote. O iniciador Windows foi preparado, mas não executado em Windows neste ambiente Linux.
+Nesta revisão, o proxy retornou HTTP 403 ao tentar conectar ao Traderie. Nenhuma criação, exclusão ou republicação real foi executada, embora o usuário tenha autorizado testes na conta. O payload de preço fixo foi fornecido diretamente pelo usuário a partir do site. Os testes não garantem a aceitação de futuras escritas pelo serviço.
 
-Para reproduzir os testes e entender as limitações de disponibilidade, consulte README.md e TRADERIE_RESEARCH.md.
+As consultas reais de catálogo registradas em TRADERIE_RESEARCH.md pertencem à v2.0.0. O iniciador Windows não foi executado neste ambiente Linux. O ZIP não contém credenciais, configuração local ou ambiente virtual.

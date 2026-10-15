@@ -29,6 +29,10 @@ listings=[{'id':77,'item_id':1219367524,'item':'Mijusuima','amount':1,'category'
            'updated':(now-dt.timedelta(hours=25)).isoformat(),'properties':{},
            'eligible':True,'availability_known':True,'image_url':None,'url':'https://traderie.com/creaturesofsonaria/listing/78'}]
 created=[]
+scheduled=[]
+controls=[]
+connections=[]
+routines=[]
 catalog_calls=[]
 fail_catalog=False
 
@@ -37,7 +41,10 @@ def route_api(route):
     req=route.request
     path=urlsplit(req.url).path
     q=parse_qs(urlsplit(req.url).query)
-    if path=='/api/state': data={'ok':True,'state':state}
+    if path=='/api/config':
+        connections.append(req.post_data_json)
+        data={'ok':True,'state':state,'message':'Conectado.'}
+    elif path=='/api/state': data={'ok':True,'state':state}
     elif path=='/api/listings': data={'ok':True,'listings':listings,'checked_at':now.isoformat()}
     elif path=='/api/catalog/search':
         catalog_calls.append(req.url)
@@ -52,7 +59,18 @@ def route_api(route):
         created.append(req.post_data_json)
         data={'ok':True,'listing_id':123}
     elif path=='/api/item-images': data={'ok':True,'images':{},'sources':{}}
-    elif path=='/api/rotation-routines': data={'ok':True,'routines':[]}
+    elif path=='/api/rotation-routines/batch':
+        payload=req.post_data_json;scheduled.append(payload)
+        for i,item in enumerate(payload['items']):
+            routines.append({**item,'id':str(i),'enabled':False,'interval_minutes':payload['interval_minutes'],'owned_ids':[],'next_run':None,'last_result':'Pronto para iniciar.','cycles':0})
+        data={'ok':True,'routines':routines}
+    elif path=='/api/rotation-routines/control':
+        controls.append(req.post_data_json)
+        for i,r in enumerate(routines):
+            r['enabled']=req.post_data_json['action']=='start'
+            r['next_run']=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(seconds=60+i*60)).isoformat()
+        data={'ok':True}
+    elif path=='/api/rotation-routines': data={'ok':True,'routines':routines}
     else: data={'ok':True,'offers':[],'listings':[]}
     route.fulfill(json=data)
 
@@ -65,6 +83,13 @@ with sync_playwright() as p:
     page.route('https://**/*',lambda route:route.abort())
     page.goto('http://127.0.0.1:8765')
     expect(page.locator('#sidebar-user')).to_have_text('Conta de teste')
+    page.locator('#btn-connect-header').click()
+    page.locator('#login-id').fill('42')
+    page.locator('#login-auth').fill('fixture-only')
+    page.locator('#connect-submit').click()
+    expect(page.locator('#connect-backdrop')).to_be_hidden()
+    assert connections[0]['user_id']=='42'
+    assert page.locator('#login-auth').input_value()==''
     page.locator('#btn-listings').click()
     expect(page.locator('.listing-card')).to_have_count(2)
     before=page.locator('[data-updated]').first.inner_text()
@@ -78,7 +103,7 @@ with sync_playwright() as p:
     page.locator('#btn-open-create').click()
     expect(page.locator('.editor-result')).to_have_count(2)
     assert '1219367524' not in page.locator('#editor-backdrop').inner_text()
-    assert 'preço' not in page.locator('#editor-backdrop').inner_text().lower()
+    expect(page.locator('#editor-sale-mode')).to_be_visible()
     page.locator('[data-editor-select="1219367524"]').click()
     expect(page.locator('#editor-preview-name')).to_have_text('Mijusuima')
     page.locator('[data-editor-category="slots"]').click()
@@ -97,7 +122,68 @@ with sync_playwright() as p:
     assert template['itemType']=='Creatures'
     assert template['properties'][0]['id']==828
     assert template['properties'][1]['string']=='Bite'
-    assert not {'price','prices','average_value','community_value'} & template.keys()
+    assert not {'price','prices','currencyGroupPrices','average_value','community_value'} & template.keys()
+    # Fixed price is sent with the exact currency schema supplied by the user.
+    page.locator('#btn-open-create').click()
+    page.locator('[data-editor-select="1219367524"]').click()
+    page.locator('#editor-sale-mode').select_option('fixed')
+    expect(page.locator('#editor-price')).to_be_visible()
+    page.locator('#editor-price').fill('0')
+    page.locator('#editor-submit').click()
+    expect(page.locator('#editor-status')).to_contain_text('preço inteiro')
+    assert len(created)==1
+    page.locator('#editor-price').fill('10000000')
+    page.screenshot(path=str(OUT/'preco-fixo-desktop.png'),full_page=True)
+    page.locator('#editor-submit').click()
+    expect(page.locator('#editor-backdrop')).to_be_hidden()
+    fixed=created[-1]['template']
+    assert fixed['currencyGroupPrices']==[{'group':0,'nmt':10000000,'currency':True}]
+    assert fixed['acceptListingPrice'] is True and fixed['makeOffer'] is False
+    # Catalog queue keeps the full template, then exposes start/stop controls.
+    page.locator('#tab-schedules').click()
+    expect(page.locator('#market-listings')).to_be_hidden()
+    expect(page.locator('#panel-routines')).to_be_visible()
+    page.locator('#schedule-add').click()
+    page.locator('[data-editor-select="1219367524"]').click()
+    page.locator('[data-editor-category="slots"]').click()
+    page.locator('#editor-prop-850').select_option('Weight')
+    page.locator('#editor-amount').fill('3')
+    page.locator('#editor-sale-mode').select_option('fixed')
+    page.locator('#editor-price').fill('1500')
+    page.locator('#editor-submit').click()
+    expect(page.locator('.draft-row')).to_have_count(1)
+    assert len(created)==2 # queue preparation never sends a listing POST
+    page.locator('#schedule-add').click()
+    page.locator('[data-editor-category="plushies"]').click()
+    page.locator('[data-editor-select="900"]').click()
+    expect(page.locator('#editor-price-field')).to_be_hidden()
+    page.locator('#editor-submit').click()
+    expect(page.locator('.draft-row')).to_have_count(2)
+    page.locator('#schedule-save').click()
+    expect(page.locator('.rotation-card')).to_have_count(2)
+    assert scheduled[0]['interval_minutes']==60
+    first=scheduled[0]['items'][0]['template']
+    assert first['amount']=='3' and first['properties'][1]['string']=='Weight'
+    assert first['currencyGroupPrices'][0]['nmt']==1500
+    assert 'currencyGroupPrices' not in scheduled[0]['items'][1]['template']
+    assert '1219367524' not in page.locator('#panel-routines').inner_text()
+    page.locator('#schedule-start').click()
+    expect(page.locator('.rotation-card.is-running')).to_have_count(2)
+    timer=page.locator('[data-schedule-time]').first
+    before=timer.inner_text()
+    expect(timer).not_to_have_text(before,timeout=3000)
+    page.screenshot(path=str(OUT/'agendamentos-desktop.png'),full_page=True)
+    page.locator('#schedule-stop').click()
+    expect(page.locator('.rotation-card.is-running')).to_have_count(0)
+    assert [c['action'] for c in controls]==['start','stop']
+    page.set_viewport_size({'width':390,'height':844})
+    page.screenshot(path=str(OUT/'agendamentos-mobile.png'),full_page=True)
+    assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')
+    page.locator('#tab-schedules').focus()
+    page.keyboard.press('ArrowLeft')
+    expect(page.locator('#tab-listings')).to_be_focused()
+    expect(page.locator('#market-listings')).to_be_visible()
+    page.set_viewport_size({'width':1440,'height':1000})
     page.locator('#btn-open-create').click()
     page.locator('#editor-search').fill('Miju')
     page.locator('[data-editor-category="plushies"]').click()
@@ -121,6 +207,10 @@ with sync_playwright() as p:
     assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')
     modal=page.locator('.editor-modal')
     assert modal.evaluate('(el)=>el.scrollWidth<=el.clientWidth')
+    page.emulate_media(reduced_motion='no-preference')
+    assert page.locator('.hero-orbit span').evaluate('(el)=>getComputedStyle(el).animationName')=='star-float'
+    page.emulate_media(reduced_motion='reduce')
+    assert page.locator('.hero-orbit span').evaluate('(el)=>getComputedStyle(el).animationName')=='none'
     assert not errors,errors
     browser.close()
-print('Browser passed: selection, publication payload, category isolation, retry, live clock, neutral blacks, keyboard, desktop/mobile.')
+print('Browser passed: offer/fixed payloads, validation, catalog queue, templates, start/stop, countdown, categories, retry, clocks, neutral blacks, keyboard and desktop/mobile.')

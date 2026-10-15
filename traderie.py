@@ -446,7 +446,7 @@ CREATE_DEFAULTS = {
     "standingListing": False, "stockListing": False,
     "touchTrading": False, "wishlist": "", "properties": [],
 }
-ALLOWED_CREATE_KEYS = frozenset(CREATE_DEFAULTS) | {"item", "amount"}
+ALLOWED_CREATE_KEYS = frozenset(CREATE_DEFAULTS) | {"item", "amount", "currencyGroupPrices"}
 
 
 def validated_creation(raw: Any) -> dict:
@@ -473,6 +473,25 @@ def validated_creation(raw: Any) -> dict:
     for key, value in out.items():
         if isinstance(CREATE_DEFAULTS.get(key), bool) and not isinstance(value, bool):
             raise ValueError(f"'{key}' deve ser verdadeiro ou falso.")
+    # Traderie creation payload supplied by the user, 2026-10-15.
+    # CoS Shooms are represented as nmt in the shared currency schema.
+    prices = out.get("currencyGroupPrices")
+    if out["acceptListingPrice"]:
+        if out["makeOffer"] or out["free"]:
+            raise ValueError("Preço fixo não pode ser combinado com ofertas ou anúncio gratuito.")
+        if not isinstance(prices, list) or len(prices) != 1:
+            raise ValueError("Informe um preço fixo em Shooms.")
+        price = prices[0]
+        if (not isinstance(price, dict) or set(price) != {"group", "nmt", "currency"}
+                or type(price["group"]) is not int or price["group"] != 0
+                or price["currency"] is not True
+                or type(price["nmt"]) is not int or not 1 <= price["nmt"] <= 999999999):
+            raise ValueError("Preço em Shooms deve ser inteiro, entre 1 e 999999999.")
+        out["currencyGroupPrices"] = [dict(price)]
+    elif prices is not None:
+        raise ValueError("Remova o preço ao escolher receber ofertas.")
+    elif not out["makeOffer"] and not out["free"]:
+        raise ValueError("Escolha receber ofertas ou um preço fixo válido.")
     if not out["selling"]:
         raise ValueError("Somente anúncios de venda são aceitos.")
     if out["captcha"] or out["captchaManaged"]:
@@ -507,8 +526,6 @@ def validated_creation(raw: Any) -> dict:
             raise ValueError("Valor booleano de propriedade inválido.")
         validated.append({"id": int(prop["id"]), "name": prop["name"], "type": kind, kind: val})
     out["properties"] = validated
-    if not out["makeOffer"] and not out["free"]:
-        raise ValueError("Este formulário suporta anúncios 'Make an Offer' ou gratuitos.")
     if out["stockListing"] or out["standingListing"]:
         raise ValueError("Anúncios de estoque/permanentes não são suportados pelas rotinas.")
     return out

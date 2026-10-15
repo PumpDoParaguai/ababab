@@ -13,8 +13,9 @@ let modalFocusBefore = null;
 let currentPage = "market";
 let rotationCache = [];
 let modalItemName = "";
-let rotationModalFocus = null;
-let rotationSelectedId = null;
+let scheduleDraft = [];
+let editorPurpose = "publish";
+let marketTab = "listings";
 let resolvedImages = new Map();
 let imageLookupPending = false;
 let imageMisses = 0;
@@ -113,9 +114,9 @@ function applyState(s) {
   $("connection-dot").classList.toggle("online", !!s.configured);
   $("sidebar-user").textContent = s.username || (s.user_id ? `Conta #${s.user_id}` : "Desconectado");
   $("sidebar-mode").textContent = s.auth_set ? "Modo completo" : s.configured ? "Somente leitura" : "Conecte sua conta";
-  if (document.activeElement !== $("routine-minutes") && document.activeElement !== $("routine-auto")) {
+  if (document.activeElement !== $("routine-auto")) {
     $("routine-auto").checked = !!s.auto_relist;
-    $("routine-minutes").value = s.check_minutes || 30;
+
   }
   $("mode").textContent = !s.configured ? "" : s.auth_set ? "Modo completo (token em memória)." : "Sem token: só endpoints públicos. Use “Testar endpoints”.";
 
@@ -129,7 +130,7 @@ function applyState(s) {
     if (s.saved.slug) $("slug").value = s.saved.slug;
     if (s.saved.username) $("username").value = s.saved.username;
     if (s.saved.user_id) $("uid").value = s.saved.user_id;
-    if (s.saved.check_minutes) $("routine-minutes").value = String(s.saved.check_minutes);
+
   }
 }
 
@@ -141,7 +142,7 @@ async function refreshState() {
 async function saveConfig() {
   const d = await api("/api/config", "POST", {
     slug: $("slug").value, username: $("username").value, user_id: $("uid").value,
-    auth: $("auth").value, auto_relist: $("routine-auto").checked, check_minutes: $("routine-minutes").value,
+    auth: $("auth").value, auto_relist: $("routine-auto").checked, check_minutes: 30,
   });
   if (!d.ok) return say("conn", d.error || "Falha ao conectar.");
   $("auth").value = "";
@@ -397,10 +398,11 @@ function navigate(page) {
   });
   if (target === "market") {
     $("routine-auto").checked = !!state.auto_relist;
-    $("routine-minutes").value = state.check_minutes || 30;
+
     if (state.configured) loadRotations();
   }
-  if (section && page !== "listings" && page !== "connection" && page !== "offers") {
+  if(page==="routines")switchMarketTab("schedules");
+  if (section && page !== "routines" && page !== "listings" && page !== "connection" && page !== "offers") {
     const panel = $("panel-"+page);
     if (panel) {
       panel.open = true;
@@ -411,9 +413,7 @@ function navigate(page) {
   }
 }
 async function saveRoutine() {
-  const minutes = Number($("routine-minutes").value);
-  if (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440) return say("routine-status", "Escolha um intervalo de 5 a 1440 minutos.");
-  const d = await api("/api/auto-relist", "POST", { enabled: $("routine-auto").checked, check_minutes: minutes });
+  const d = await api("/api/auto-relist", "POST", { enabled: $("routine-auto").checked });
   if (!d.ok) return fail("routine-status", d);
   applyState(d.state);
 
@@ -593,9 +593,9 @@ function editorPreview(){
   const item=editorSelected;
   $('editor-preview-name').textContent=item?.name||'Selecione um item';
   $('editor-preview-type').textContent=EDITOR_NAMES[editorCategory];
-  $('editor-submit').disabled=editorSubmitting || !item || !state.auth_set;
+  $('editor-submit').disabled=editorSubmitting || !item || (editorPurpose==='publish'&&!state.auth_set);
   $('editor-connect').hidden=!!state.auth_set;
-  $('editor-account-hint').textContent=state.auth_set?'Tudo pronto? Revise o item e publique.':'Conecte sua conta para publicar. Você já pode explorar o catálogo.';
+  $('editor-account-hint').textContent=editorPurpose==='schedule'?'As características e o modo de venda serão preservados em cada ciclo.':state.auth_set?'Tudo pronto? Revise o item e publique.':'Conecte sua conta para publicar. Você já pode explorar o catálogo.';
   const img=imageSafe(item?.image_url);
   $('editor-preview').querySelector('.editor-preview-art').innerHTML=img?
     `<img src="${esc(img)}" alt="${esc(item?.name||"Item")}" referrerpolicy="no-referrer" data-image-fallback="1">`:'✦';
@@ -650,7 +650,12 @@ function renderEditorTraits(){
   }).join('');
 }
 let editorFocusBefore=null;
-function openEditor(x=null){
+function openEditor(x=null, purpose="publish"){
+  editorPurpose=purpose;
+  $("editor-submit").textContent=purpose==="schedule"?"Adicionar à fila →":"Publicar anúncio →";
+  $("editor-sale-mode").value="offer";
+  $("editor-price").value="";
+  updateSaleMode();
   editorFocusBefore=document.activeElement;
   editorOpenRequest++;
   editorSelected=null;
@@ -704,14 +709,26 @@ function buildEditorTemplate(){
     if(limit && props.filter(p=>members.some(m=>m.id===p.id)).length>limit)throw Error(`Escolha no máximo ${limit} em ${group}.`);
   }
   const itemType=editorSelected.item_type || {species:'Creatures',slots:'Creatures',plushies:'plushies',palettes:'palettes'}[editorCategory];
-  return {item:id,amount:String(amount),itemType,makeOffer:true,free:false,selling:true,properties:props};
+  const fixed=$('editor-sale-mode').value==='fixed';
+  const template={item:id,amount:String(amount),itemType,makeOffer:!fixed,acceptListingPrice:fixed,free:false,selling:true,properties:props};
+  if(fixed){
+    const price=Number($('editor-price').value);
+    if(!Number.isSafeInteger(price)||price<1||price>999999999)throw Error('Informe um preço inteiro em Shooms (1 a 999999999).');
+    template.currencyGroupPrices=[{group:0,nmt:price,currency:true}];
+  }
+  return template;
 }
 async function submitEditor() {
   let template;
   try { template = buildEditorTemplate(); }
   catch(error) { return say('editor-status',error.message); }
   const name = editorSelected.name;
-  if (!confirm(`Publicar ${template.amount}x ${name} (${ EDITOR_NAMES[editorCategory] }) no Traderie?`)) return;
+  if(editorPurpose==='schedule'){
+    if(scheduleDraft.length>=20)return say('editor-status','Limite de 20 itens por fila.');
+    scheduleDraft.push({item_name:name,template:structuredClone(template),category:EDITOR_NAMES[editorCategory]});
+    renderScheduleDraft();closeEditor();switchMarketTab('schedules');return;
+  }
+  if (!confirm(`Publicar ${template.amount}x ${name} (${ EDITOR_NAMES[editorCategory] }) — ${saleLabel(template)} — no Traderie?`)) return;
   editorSubmitting = true;
   $('editor-submit').disabled = true;
   say('editor-status','Publicando…',true);
@@ -750,166 +767,67 @@ async function deleteSelected() {
   await loadListings();
   if (!d.errors.length) closeGroupModal();
 }
-async function loadRotations() {
-  if (!state.configured) return;
-  const d = await api("/api/rotation-routines");
-  if (!d.ok) return fail("rotation-status", d);
-  rotationCache = d.routines || [];
-  $("rotation-list").innerHTML = rotationCache.map(r => `<article class="rotation-card"><div class="rotation-head"><strong>${esc(r.item_name)}</strong><span class="eligibility ${r.enabled ? "" : "pending"}">${r.enabled ? "Ativa" : "Pausada"}</span></div>
-    <p class="muted">ID item: ${esc(r.template.item)} · A cada ${esc(r.interval_minutes)} min · ${esc(r.owned_ids.length)} anúncio(s) rastreado(s)</p>
-    <p class="muted">Próximo ciclo: ${esc(r.next_run ? new Date(r.next_run).toLocaleString("pt-BR") : "não agendado")}</p>
-    <p class="routine-note">${esc(r.last_result || "—")}</p>
-    <div class="actions"><button class="${r.enabled ? "secondary" : ""}" data-rotation-id="${esc(r.id)}" data-rotation-action="${r.enabled ? "pause" : "enable"}" ${!r.enabled && !state.auth_set ? "disabled" : ""}>${r.enabled ? "Pausar" : "Ativar"}</button>
-    <button class="secondary" data-rotation-id="${esc(r.id)}" data-rotation-action="run_now" ${!state.auth_set ? "disabled" : ""}>Executar agora</button>
-    <button class="secondary" data-rotation-id="${esc(r.id)}" data-rotation-action="edit">Ver modelo</button>
-    <button class="danger" data-rotation-id="${esc(r.id)}" data-rotation-action="remove" ${r.enabled ? "disabled" : ""}>Remover rotina</button></div></article>`).join("") || '<div class="empty-state"><strong>Nenhuma rotina criada</strong><p>Preencha os campos acima e salve uma rotina pausada.</p></div>';
+function updateSaleMode(){
+  const fixed=$('editor-sale-mode').value==='fixed';
+  $('editor-price-field').hidden=!fixed;
+  $('editor-sale-hint').textContent=fixed?'Aceitar somente o preço informado.':'Compradores podem enviar ofertas.';
+}
+function switchMarketTab(tab){
+  marketTab=tab;
+  $('market-listings').hidden=tab!=='listings';$('panel-routines').hidden=tab!=='schedules';
+  document.querySelectorAll('[data-market-tab]').forEach(b=>{const active=b.dataset.marketTab===tab;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1;});
+  if(tab==='schedules')void loadRotations();
+}
+function saleLabel(template){return template.makeOffer?'Pedir ofertas':`Preço fixo · ${Number(template.currencyGroupPrices?.[0]?.nmt || 0).toLocaleString('pt-BR')} Shooms`;}
+function renderScheduleDraft(){
+  $('schedule-draft').innerHTML=scheduleDraft.map((r,i)=>`<div class="draft-row"><span class="queue-number">${String(i+1).padStart(2,'0')}</span><div><strong>${esc(r.item_name)}</strong><small>${esc(r.template.amount)}× · ${esc(r.category)} · ${esc(saleLabel(r.template))}</small></div><button class="secondary icon-button" data-remove-draft="${i}" aria-label="Remover ${esc(r.item_name)}">✕</button></div>`).join('')||'<p class="muted">Adicione itens do catálogo para montar sua fila.</p>';
+  $('schedule-save').disabled=!scheduleDraft.length;
+}
+async function saveSchedule(){
+  $('schedule-save').disabled=true;
+  const d=await api('/api/rotation-routines/batch','POST',{items:scheduleDraft.map(({item_name,template})=>({item_name,template})),interval_minutes:Number($('schedule-minutes').value)});
+  if(!d.ok){renderScheduleDraft();return fail('rotation-status',d);}
+  scheduleDraft=[];renderScheduleDraft();await loadRotations();say('rotation-status','Fila salva. Clique em Iniciar fila para publicar.',true);
+}
+async function controlSchedule(action){
+  if(action==='start'&&!confirm('Iniciar a fila? Os itens serão publicados com pelo menos 1 minuto entre cada. A cada intervalo, seus anúncios gerenciados serão excluídos e recriados, até você interromper.'))return;
+  const d=await api('/api/rotation-routines/control','POST',{action,confirm:true});
+  if(!d.ok)return fail('rotation-status',d);
+  await loadRotations();say('rotation-status',action==='start'?'Fila iniciada.':'Agendamentos interrompidos. Requisições já enviadas podem terminar.',true);
+}
+let rotationFingerprint='';
+let rotationLoading=false;
+async function loadRotations(){
+  if(!state.configured){rotationFingerprint='';$('rotation-list').innerHTML='<div class="empty-state"><strong>Conecte sua conta</strong><p>Você pode preparar os itens do catálogo antes de conectar.</p></div>';return;}
+  if(rotationLoading)return;
+  rotationLoading=true;
+  let d;try{d=await api('/api/rotation-routines');}finally{rotationLoading=false;}
+  if(!d.ok)return fail('rotation-status',d);
+  rotationCache=d.routines||[];
+  $('schedule-count').textContent=rotationCache.length;
+  const fingerprint=JSON.stringify(d);
+  if(fingerprint===rotationFingerprint)return;
+  rotationFingerprint=fingerprint;
+  $('rotation-list').innerHTML=rotationCache.map((r,i)=>`<article class="rotation-card ${r.enabled?'is-running':''}"><div class="rotation-head"><span class="queue-number">${String(i+1).padStart(2,'0')}</span><strong>${esc(r.item_name)}</strong><span class="eligibility ${r.enabled?'':'pending'}">${r.enabled?'Em andamento':'Pausado'}</span></div><p class="muted">${esc(r.template.amount)}× · ${esc(saleLabel(r.template))} · Renova a cada ${Number(r.interval_minutes)} min</p><div class="schedule-meta"><span>${Number(r.cycles||0)} publicações</span><strong data-schedule-time="${esc(r.enabled?r.next_run||'':'')}" data-queue-gate="${esc(d.queue_not_before||'')}">${r.enabled?'Na fila':'Pausado'}</strong></div><p class="routine-note">${esc(r.last_result||'Pronto para iniciar.')}</p><details class="schedule-template"><summary>Ver configurações</summary><p>${esc((r.template.properties||[]).map(p=>p.name+': '+String(p[p.type])).join(' · ')||'Sem características adicionais')}</p></details><div class="actions"><button class="secondary" data-rotation-id="${esc(r.id)}" data-rotation-action="${r.enabled?'pause':'enable'}">${r.enabled?'Pausar':'Retomar'}</button><button class="danger" data-rotation-id="${esc(r.id)}" data-rotation-action="remove" ${r.enabled||r.running?'disabled':''}>Remover</button></div></article>`).join('')||'<div class="empty-state"><span>◷</span><strong>Sua próxima publicação pode ser automática</strong><p>Adicione itens do catálogo e salve sua primeira fila.</p></div>';
+  tickSchedules();
+}
+function tickSchedules(){
+  document.querySelectorAll('[data-schedule-time]').forEach(el=>{
+    if(!el.dataset.scheduleTime)return;
+    const deadline=Math.max(Date.parse(el.dataset.scheduleTime),Date.parse(el.dataset.queueGate)||0);
+    const sec=Math.max(0,Math.ceil((deadline-Date.now())/1000));
+    el.textContent=sec?`Próximo em ${Math.floor(sec/60)}m ${String(sec%60).padStart(2,'0')}s`:'Pronto · aguardando vez';
+  });
+}
+async function rotationAction(id,action){
+  if(action==='remove'&&!confirm('Remover este agendamento? O anúncio atual será preservado.'))return;
+  const d=await api('/api/rotation-routines/action','POST',{id,action,confirm:true});
+  if(!d.ok)return fail('rotation-status',d);
+  await loadRotations();
 }
 function htmlOption(value, text, selected = false) {
   return `<option value="${esc(value)}" ${selected ? 'selected' : ''}>${esc(text)}</option>`;
 }
-function populateRotationSources(selectedId = null) {
-  const choices = listingsCache.filter(x => x.item_id && Number(x.item_id) > 0);
-  const sel = $('rotation-source');
-  sel.innerHTML = '<option value="">Selecione um anúncio carregado</option>' + choices.map(x =>
-    htmlOption(x.id, `${x.item || 'Item'} · #${x.id} · ${propEntries(x).length} característica(s)`, Number(x.id) === Number(selectedId))
-  ).join('');
-  sel.disabled = choices.length === 0;
-  if (!choices.length) say('rotation-modal-status', 'Carregue os anúncios primeiro. A API precisa informar o ID do item para criar a rotina.');
-  return choices;
-}
-function showRotationModal(listingId = null) {
-  rotationModalFocus = document.activeElement;
-  $('rotation-modal-title').textContent = 'Criar rotina';
-  $('rotation-backdrop').classList.remove('hidden');
-  $('rotation-backdrop').setAttribute('aria-hidden', 'false');
-  document.body.style.overflow = 'hidden';
-  $('rotation-name').value = '';
-  $('rotation-minutes').value = '60';
-  $('rotation-amount').value = '1';
-  $('rotation-item-type').value = 'sub-species';
-  $('rotation-offer').value = 'offer';
-  say('rotation-modal-status', '');
-  const choices = populateRotationSources(listingId);
-  const selected = choices.find(x => Number(x.id) === Number(listingId));
-  if (selected) setRotationSource(selected.id);
-  else {
-    rotationSelectedId = null;
-    $('rotation-traits').innerHTML = '<p class="muted">Selecione um anúncio acima para escolher traits e propriedades.</p>';
-    $('trait-hint').textContent = 'Nenhum modelo selecionado.';
-  }
-  $('rotation-source').focus();
-}
-function closeRotationModal() {
-  $('rotation-backdrop').classList.add('hidden');
-  $('rotation-backdrop').setAttribute('aria-hidden', 'true');
-  document.body.style.overflow = '';
-  rotationModalFocus?.focus();
-}
-function setRotationSource(id) {
-  const x = listingsCache.find(row => Number(row.id) === Number(id));
-  rotationSelectedId = x ? Number(x.id) : null;
-  if (!x) {
-    $('rotation-traits').innerHTML = '<p class="muted">Selecione um modelo para continuar.</p>';
-    return;
-  }
-  $('rotation-name').value = x.item || '';
-  $('rotation-amount').value = x.amount || 1;
-  const props = propEntries(x);
-  $('trait-hint').textContent = `${props.length} propriedade(s) disponíveis no anúncio escolhido.`;
-  $('rotation-traits').innerHTML = props.map((property, i) => {
-    const sameItem = listingsCache.filter(row => row.item_id && row.item_id === x.item_id);
-    const possible = [...new Set(sameItem.flatMap(row => propEntries(row)
-      .filter(p => String(p.id) === String(property.id)).map(p => String(p.value ?? ''))))];
-    const values = possible.slice(0, 30);
-    const choices = values.map(v => htmlOption(v, v, String(v) === String(property.value))).join('');
-    return `<div class="trait-row"><label class="check"><input type="checkbox" data-trait-index="${i}" checked> ${esc(property.name)} <small class="muted">(${esc(property.type || 'string')})</small></label><div class="trait-field"><select data-trait-value="${i}" aria-label="Valor de ${esc(property.name)}">${choices}${htmlOption('__custom__', 'Outro valor...')}</select><input class="hidden" data-trait-custom="${i}" placeholder="Valor personalizado" aria-label="Outro valor de ${esc(property.name)}" /></div></div>`;
-  }).join('') || '<div class="muted">Este anúncio não possui propriedades adicionais.</div>';
-}
-function buildRotationTemplate() {
-  const listing = listingsCache.find(x => x.id === rotationSelectedId);
-  if (!listing || !listing.item_id) throw new Error('Selecione um anúncio com ID de item válido.');
-  const amount = Number($('rotation-amount').value);
-  if (!Number.isInteger(amount) || amount < 1 || amount > 999) throw new Error('Quantidade deve ser de 1 a 999.');
-  const properties = propEntries(listing).flatMap((p, i) => {
-    if (!document.querySelector(`[data-trait-index="${i}"]`)?.checked) return [];
-    const select = document.querySelector(`[data-trait-value="${i}"]`);
-    const custom = document.querySelector(`[data-trait-custom="${i}"]`);
-    const raw = select.value === '__custom__' ? custom.value.trim() : select.value;
-    const type = p.type || 'string';
-    if (!['string','number','bool'].includes(type)) throw new Error('Propriedade com tipo não suportado: ' + p.name);
-    if (!Number.isSafeInteger(Number(p.id))) throw new Error('ID de propriedade inválido: ' + p.name);
-    let value = raw;
-    if (type === 'number') {
-      if (raw === '' || !Number.isFinite(Number(raw))) throw new Error('Valor numérico inválido: ' + p.name);
-      value = Number(raw);
-    } else if (type === 'bool') {
-      if (!['true','false'].includes(String(raw).toLowerCase())) throw new Error('Escolha verdadeiro ou falso para: ' + p.name);
-      value = String(raw).toLowerCase() === 'true';
-    }
-    return [{id:Number(p.id), name:p.name, type, [type]:value}];
-  });
-  const mode = $('rotation-offer').value;
-  return {
-    item: String(listing.item_id), itemType:$('rotation-item-type').value, amount:String(amount),
-    selling:true, makeOffer:mode==='offer', free:mode==='free', properties,
-  };
-}
-async function addRotation() {
-  let template;
-  try { template = buildRotationTemplate(); } catch(e) { return say('rotation-modal-status', e.message); }
-  const item_name = $('rotation-name').value.trim();
-  const interval_minutes = Number($('rotation-minutes').value);
-  if (!item_name || !Number.isInteger(interval_minutes) || interval_minutes < 15 || interval_minutes > 1440)
-    return say('rotation-modal-status', 'Informe um nome e intervalo válido.');
-  $('rotation-submit').disabled = true;
-  const d = await api('/api/rotation-routines', 'POST', {item_name, interval_minutes, template});
-  $('rotation-submit').disabled = false;
-  if (!d.ok) return fail('rotation-modal-status', d);
-  closeRotationModal();
-  say('rotation-status', 'Rotina salva pausada. Revise os dados antes de ativá-la.', true);
-  showToast('Rotina criada e salva como pausada.');
-  await loadRotations();
-}
-async function rotationAction(id, action) {
-  const r = rotationCache.find(x => x.id === id);
-  if (!r) return;
-  if (action === 'edit') {
-    const raw = listingsCache.find(x => x.item_id && String(x.item_id) === String(r.template.item));
-    showRotationModal(raw?.id || null);
-    $('rotation-name').value = r.item_name;
-    $('rotation-minutes').value = String(r.interval_minutes);
-    if (raw) {
-      $('rotation-amount').value = r.template.amount;
-      $('rotation-item-type').value = r.template.itemType || 'sub-species';
-      $('rotation-offer').value = r.template.free ? 'free' : 'offer';
-      $('rotation-traits').querySelectorAll('input[data-trait-index]').forEach((cb, i) => {
-        const orig = propEntries(raw)[i];
-        const selected = (r.template.properties || []).find(p => String(p.id) === String(orig.id));
-        cb.checked = !!selected;
-        if (selected) {
-          const sel = $('rotation-traits').querySelector(`[data-trait-value="${i}"]`);
-          const custom = $('rotation-traits').querySelector(`[data-trait-custom="${i}"]`);
-          const val = String(selected[selected.type]);
-          if ([...sel.options].some(o => o.value === val)) sel.value = val;
-          else { sel.value='__custom__'; custom.classList.remove('hidden'); custom.value=val; }
-        }
-      });
-    }
-    $('rotation-modal-title').textContent = 'Duplicar configuração';
-    say('rotation-modal-status', 'Salvar gera uma NOVA rotina pausada; a existente não será alterada.', true);
-    return;
-  }
-  if (action === "enable" && !confirm(`Ativar rotação de ${r.item_name} a cada ${r.interval_minutes} min? O programa criará anúncios reais e excluirá apenas os IDs criados pela rotina.`)) return;
-  if (action === "run_now" && !confirm(`Executar AGORA uma criação real de ${r.item_name} e, se houver, excluir o anúncio anterior criado pela rotina?`)) return;
-  if (action === "remove" && !confirm("Remover a configuração? Anúncios já criados permanecerão no Traderie.")) return;
-  const d = await api("/api/rotation-routines/action", "POST", {id, action, confirm: true});
-  if (!d.ok) return fail("rotation-status", d);
-  say("rotation-status", d.message || "Rotina atualizada.", true);
-  await loadRotations();
-  if (action === "run_now") await loadListings();
-}
-
-// ---- Ofertas no contexto do anúncio ------------------------------------------
 async function openListingOffers(id) {
   offersForListingId = id;
   offersModalFocus = document.activeElement;
@@ -1192,7 +1110,7 @@ async function loginConnect() {
     const d=await api("/api/config", "POST", {
       slug:$("login-slug").value, username, user_id:uid,
       auth:$("login-auth").value, auto_relist:false,
-      check_minutes:Number($("routine-minutes").value || 30)
+      check_minutes:30
     });
     if(!d.ok) return say("login-status", d.error||"Falha na conexão.");
     $("username").value=username; $("uid").value=uid || d.state.user_id;
@@ -1257,9 +1175,12 @@ document.addEventListener("click", (e) => {
   else if (d.counterCancel) document.querySelector(`[data-counter-box="${d.counterCancel}"]`)?.classList.add('hidden');
   else if (d.sendCounter) sendListingCounterMessage(Number(d.sendCounter));
   else if (d.declineOffer) declineListingOffer(Number(d.declineOffer));
-  else if (t.id === 'btn-open-rotation') showRotationModal();
-  else if (t.id === 'rotation-close' || t.id === 'rotation-cancel') closeRotationModal();
-  else if (t.id === 'rotation-submit') addRotation();
+  else if (d.marketTab) switchMarketTab(d.marketTab);
+  else if (t.id === 'schedule-add') openEditor(null,'schedule');
+  else if (t.id === 'schedule-save') saveSchedule();
+  else if (t.id === 'schedule-start') controlSchedule('start');
+  else if (t.id === 'schedule-stop') controlSchedule('stop');
+  else if (d.removeDraft!==undefined){scheduleDraft.splice(Number(d.removeDraft),1);renderScheduleDraft();}
   else if (t.id === 'btn-image-save') setManualImage();
   else if (t.id === 'btn-image-clear') setManualImage(true);
   else if (t.id === "editor-close" || t.id === "editor-cancel") closeEditor();
@@ -1270,7 +1191,7 @@ document.addEventListener("click", (e) => {
   else if (t.dataset.selectGroup !== undefined) openGroupModal(Number(t.dataset.selectGroup));
   else if (t.dataset.createRoutine !== undefined) {
     const g = (window.__listingGroups || [])[Number(t.dataset.createRoutine)];
-    if (g) showRotationModal(g.rows[0]?.id);
+    if (g) openEditor(g.rows[0],'schedule');
   }
   else if (["btn-connect-sidebar","btn-connect-header"].includes(t.id)) openConnect();
   else if (["connect-close","connect-cancel"].includes(t.id)) closeConnect();
@@ -1315,20 +1236,19 @@ $('editor-species').addEventListener('change', e=>setEditorSpecies(e.target.valu
 $('editor-item-id').addEventListener('input',()=>{if(String(editorSelected?.id)!==$('editor-item-id').value){editorSelected=null;renderEditorTraits();editorPreview();$('editor-traits-hint').textContent='Para ter opções, selecione um item retornado na pesquisa.';}});
 $('editor-search').addEventListener('input',()=>{editorOpenRequest++;clearTimeout(editorSearchTimer);editorSearchTimer=setTimeout(searchEditorSpecies,300);});
 
-$("rotation-backdrop").addEventListener("click", (e) => { if (e.target === $("rotation-backdrop")) closeRotationModal(); });
-$("rotation-source").addEventListener('change', (e) => setRotationSource(e.target.value));
-$("rotation-traits").addEventListener('change', (e) => {
-  const input = e.target.closest('[data-trait-value]');
-  if (!input) return;
-  const custom = $("rotation-traits").querySelector(`[data-trait-custom="${input.dataset.traitValue}"]`);
-  custom.classList.toggle('hidden', input.value !== '__custom__');
-  if (input.value === '__custom__') custom.focus();
+$('editor-sale-mode').addEventListener('change',updateSaleMode);
+document.querySelector('.market-tabs').addEventListener('keydown',e=>{
+  if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
+  e.preventDefault();const tab=e.key==='Home'?'listings':e.key==='End'?'schedules':marketTab==='listings'?'schedules':'listings';
+  switchMarketTab(tab);$(`tab-${tab}`).focus();
 });
+setInterval(tickSchedules,1000);
+setInterval(()=>{if(currentPage==='market'&&marketTab==='schedules'&&!document.hidden)void loadRotations();},3000);
 document.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-card-offers]")) {
     e.preventDefault(); openListingOffers(Number(e.target.dataset.cardOffers)); return;
   }
-  if (e.key !== "Escape") return; if (!$('trade-chat-backdrop').classList.contains('hidden')) closeOfferChat(); else if (!$('offer-backdrop').classList.contains('hidden')) closeListingOffers(); else if (!$('rotation-backdrop').classList.contains('hidden')) closeRotationModal(); else if (!$('editor-backdrop').classList.contains('hidden')) closeEditor(); else if (!$('modal-backdrop').classList.contains('hidden')) closeGroupModal(); });
+  if (e.key !== "Escape") return; if (!$('trade-chat-backdrop').classList.contains('hidden')) closeOfferChat(); else if (!$('offer-backdrop').classList.contains('hidden')) closeListingOffers(); else if (!$('editor-backdrop').classList.contains('hidden')) closeEditor(); else if (!$('modal-backdrop').classList.contains('hidden')) closeGroupModal(); });
 document.addEventListener("error", (e) => {
   if (!(e.target instanceof HTMLImageElement) || !e.target.matches("[data-property-icon]")) return;
   const fallback = document.createElement("span");
