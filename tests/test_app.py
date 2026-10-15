@@ -139,28 +139,29 @@ class AppTests(unittest.TestCase):
 
     def test_accept_offer_flow(self):
         self.configure("tok")
-        offer = traderie.Offer("I", 1, 2, 3, "s", 4, "b", 1, 5)
+        offer = traderie.Offer("I", 1, 2, 42, "s", 4, "b", 1, 5)
         with mock.patch.object(traderie.TraderieClient, "get_offers", return_value={1: offer}), \
              mock.patch.object(traderie.TraderieClient, "accept_offer") as acc, \
-             mock.patch.object(traderie.TraderieClient, "open_conversation", side_effect=traderie.TraderieError("x")):
-            d = self.post("/api/offers/action", {"offer_id": 1, "action": "accept"}).get_json()
+             mock.patch.object(traderie.TraderieClient, "open_conversation") as conversation:
+            d = self.post("/api/offers/action", {"offer_id": 1, "action": "accept", "confirm":True, "revision":appmod.offer_revision(offer)}).get_json()
         acc.assert_called_once()
         self.assertTrue(d["ok"])
-        self.assertEqual(d["conversation_warning"], "x")
+        conversation.assert_not_called()
 
     def test_decline_offer_uses_custom_or_default_reason(self):
         self.configure("tok")
-        offer = traderie.Offer("I", 1, 2, 3, "s", 4, "b", 1, 5)
+        offer = traderie.Offer("I", 1, 2, 42, "s", 4, "b", 1, 5)
         with mock.patch.object(traderie.TraderieClient, "get_offers", return_value={1: offer}), \
              mock.patch.object(traderie.TraderieClient, "decline_offer") as dec:
-            self.post("/api/offers/action", {"offer_id": 1, "action": "decline", "reason": "  sold  "})
-            self.post("/api/offers/action", {"offer_id": 1, "action": "decline", "reason": ""})
+            self.post("/api/offers/action", {"offer_id": 1, "action": "decline", "reason": "  sold  ", "confirm":True, "revision":appmod.offer_revision(offer)})
+            appmod.S.offer_actions.clear()  # independent scenario: default reason
+            self.post("/api/offers/action", {"offer_id": 1, "action": "decline", "reason": "", "confirm":True, "revision":appmod.offer_revision(offer)})
         self.assertEqual(dec.call_args_list[0].args[1], "sold")
         self.assertEqual(dec.call_args_list[1].args[1], "the offer was too low")
 
     def test_offers_and_conversations_are_lists(self):
         self.configure("tok")
-        offer = traderie.Offer("I", 1, 2, 3, "s", 4, "b", 1, 5)
+        offer = traderie.Offer("I", 1, 2, 42, "s", 4, "b", 1, 5)
         with mock.patch.object(traderie.TraderieClient, "get_offers", return_value={1: offer}):
             self.assertEqual(self.get("/api/offers?kind=received").get_json()["offers"][0]["offerID"], 1)
         convo = {9: traderie.Conversation(5, 9)}

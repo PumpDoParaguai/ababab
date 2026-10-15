@@ -44,3 +44,11 @@ O usuário forneceu o payload de `listings/create` para uma publicação de pre�
 A v2.1.0 preserva esse formato e valida um único valor positivo inteiro. Ao escolher ofertas, omite `currencyGroupPrices` e envia `acceptListingPrice: false`, `makeOffer: true`. Não consulta valores de mercado.
 
 Durante esta revisão, consultas ao Traderie falharam no túnel do proxy com HTTP 403, antes de autenticação ou resposta do site. A autorização do usuário para criar/excluir na conta de teste foi recebida, mas não houve execução dessas escritas reais. Contratos e ciclos foram validados com respostas simuladas; as leituras reais descritas nas seções anteriores são da revisão v2.0.0.
+
+## Notificações e ofertas — v2.2.0
+
+A central reutiliza as rotas herdadas `GET notifications`, `GET offers?accepted=open&seller=<conta>`, `PUT notifications/read`, `PUT offers/accept` e `PUT offers/deny`. A leitura é periódica (15 segundos), sem webhook presumido. O cliente preserva os valores recebidos em `prices`, `currencyGroupPrices` ou `nmt`, sem acrescentar médias de mercado.
+
+O formato da contraproposta nativa ainda não foi confirmado. O usuário foi solicitado a fornecer URL, método e Request Payload da ação Counter Offer. Até lá, o painel abre o anúncio no site oficial para essa operação. A rota antiga de negociação por mensagem permanece distinta da contraproposta formal.
+
+Para ícones, prioriza a URL retornada nos metadados da propriedade. Nomes de arquivos derivados são apenas alternativas; se falharem, usa SVGs locais, sem alegar que sejam os ícones oficiais. A conexão ao site nesta revisão retornou erro 403 do túnel do proxy antes de alcançar o Traderie.

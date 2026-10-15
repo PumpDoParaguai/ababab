@@ -33,3 +33,10 @@ assert.ok(!/Glow Tail:\s*True|Bite:\s*True|Damage:\s*False/.test(html), 'Raw boo
 const separate = context.getBadgeHTML({properties:{mutation:{name:'Mutation',value:'Glow Tail',type:'string'}}});
 assert.ok(separate.includes('Glow_Tail.png'), 'Single mutation value has icon');
 console.log('Passed: property icons, grouped traits, bools, safe URL generation.');
+
+const supplied=context.getBadgeHTML({properties:{c:{name:'Corrupt',type:'bool',value:'True',icon_url:'https://cdn.example.com/corrupt-real.webp'},slot:{name:'Species or Slot?',type:'string',value:'Slot'}}});
+assert.ok(supplied.includes('src="https://cdn.example.com/corrupt-real.webp"'), 'API image takes precedence over guessed filenames');
+assert.ok(supplied.includes('/static/icons/corrupt.svg'), 'Corrupt has a bundled fallback');
+assert.ok(supplied.includes('>Slot</span>') && !supplied.includes('Species or Slot'), 'Only the slot label is visible');
+const species=context.getBadgeHTML({properties:{mode:{name:'Species or Slot?',type:'string',value:'Species'}}});
+assert.ok(species.includes('>Espécie</span>'));

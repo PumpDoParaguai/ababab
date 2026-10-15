@@ -90,6 +90,7 @@ with sync_playwright() as p:
     expect(page.locator('#connect-backdrop')).to_be_hidden()
     assert connections[0]['user_id']=='42'
     assert page.locator('#login-auth').input_value()==''
+    assert page.locator('.market-heading').count()==0
     page.locator('#btn-listings').click()
     expect(page.locator('.listing-card')).to_have_count(2)
     before=page.locator('[data-updated]').first.inner_text()
@@ -208,9 +209,9 @@ with sync_playwright() as p:
     modal=page.locator('.editor-modal')
     assert modal.evaluate('(el)=>el.scrollWidth<=el.clientWidth')
     page.emulate_media(reduced_motion='no-preference')
-    assert page.locator('.hero-orbit span').evaluate('(el)=>getComputedStyle(el).animationName')=='star-float'
+    assert page.locator('.live-dot').first.evaluate('(el)=>getComputedStyle(el).animationName')=='live-pulse'
     page.emulate_media(reduced_motion='reduce')
-    assert page.locator('.hero-orbit span').evaluate('(el)=>getComputedStyle(el).animationName')=='none'
+    assert page.locator('.live-dot').first.evaluate('(el)=>getComputedStyle(el).animationName')=='none'
     assert not errors,errors
     browser.close()
 print('Browser passed: offer/fixed payloads, validation, catalog queue, templates, start/stop, countdown, categories, retry, clocks, neutral blacks, keyboard and desktop/mobile.')

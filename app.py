@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -92,6 +93,9 @@ class State:
         self.rotation_owner: str = ""
         self.rotation_not_before = None
         self.catalog_cache: dict = {}
+        self.inbox = {}
+        self.offer_actions = {}
+
 
     def public(self) -> dict:
         with self.lock:
@@ -121,9 +125,17 @@ WRITE_LOCK = threading.Lock()  # serializa criações, exclusões e rotinas
 STOP = threading.Event()
 AUTO_WAKE = threading.Event()
 CATALOG_CLIENT = TraderieClient()
+INBOX_LOCK = threading.Lock()
+OFFER_ACTION_LOCK = threading.Lock()
+
+
+def offer_revision(offer):
+    return hashlib.sha256(json.dumps(asdict(offer), sort_keys=True, default=str).encode()).hexdigest()
 
 
 def to_json(obj: Any) -> Any:
+    if isinstance(obj, traderie.Offer):
+        return {**to_json(asdict(obj)), "revision": offer_revision(obj)}
     if is_dataclass(obj) and not isinstance(obj, type):
         return asdict(obj)
     if isinstance(obj, dict):
@@ -235,7 +247,7 @@ def connect(slug: str, username: str, raw_id: str, auth: Optional[str], minutes:
 
     auto = want_auto and client.has_auth  # automação exige token
     owner = f"{client.slug}:{user_id}"
-    with WRITE_LOCK, S.lock:
+    with WRITE_LOCK, OFFER_ACTION_LOCK, S.lock:
         # Não reutiliza rotinas de outra conta. Nunca reativa após reconectar.
         if S.rotation_owner != owner:
             stored = _read_json(ROTATIONS_FILE)
@@ -253,6 +265,8 @@ def connect(slug: str, username: str, raw_id: str, auth: Optional[str], minutes:
         S.relist_success.clear()
         S.last_auto_run = S.last_auto_result = S.next_auto_run = None
         S.listings_snapshot = S.listings_checked_at = None
+        S.inbox = {}
+        S.offer_actions = {}
     AUTO_WAKE.set()
     _write_json(CONFIG_FILE, {"slug": client.slug, "username": username, "user_id": user_id, "check_minutes": minutes})
 
@@ -417,7 +431,7 @@ def rotation_public(r: dict) -> dict:
 
 def require_auth(client: TraderieClient) -> None:
     if not client.has_auth:
-        raise AuthRequired("Criação e exclusão exigem Authorization válido.")
+        raise AuthRequired("Esta ação exige Authorization válido.")
 
 
 def positive_id(value: Any, label: str) -> int:
@@ -607,6 +621,8 @@ def api_clear_auth():
         if S.client:
             S.client.auth = ""
         S.auto_relist = False
+        S.inbox = {}
+        S.offer_actions = {}
         for rotation in S.rotations:
             rotation["enabled"] = False
         save_rotations()
@@ -666,6 +682,89 @@ def api_online(client, uid):
     return jsonify({"ok": True, "status": new})
 
 
+def refresh_inbox(client, uid):
+    """Refresh independent sources; stale data remains visible with its error."""
+    if not client.has_auth or not INBOX_LOCK.acquire(blocking=False):
+        return
+    try:
+        for source in ("notifications", "offers"):
+            with S.lock:
+                if S.client is not client or S.user_id != uid or not client.has_auth:
+                    return
+                previous = S.inbox.get(source, {})
+                now = dt.datetime.now(dt.timezone.utc)
+                if previous.get("paused") or (previous.get("next_check") and previous["next_check"] > now):
+                    continue
+            try:
+                items = client.get_notifications(limit=50) if source == "notifications" else list(client.get_offers(to_seller=uid).values())
+                if source == "offers":
+                    items = [o for o in items if o.sellerID == uid]
+                result = {"items": to_json(items), "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                          "error": None, "paused": False, "rate_limited": False,
+                          "next_check": dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=15)}
+            except TraderieError as exc:
+                result = {**previous, "error": str(exc), "paused": isinstance(exc, (AuthRequired, traderie.Blocked)),
+                          "rate_limited": exc.status == 429,
+                          "next_check": dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=max(30, getattr(exc, 'retry_after', 30)))}
+            with S.lock:
+                if S.client is not client or S.user_id != uid or not client.has_auth:
+                    return
+                S.inbox[source] = result
+                # A service-wide rejection must also back off the other source.
+                if result.get("paused") or result.get("rate_limited"):
+                    other = "offers" if source == "notifications" else "notifications"
+                    S.inbox[other] = {**S.inbox.get(other, {}), "error": result["error"],
+                                     "paused": result["paused"], "rate_limited": result["rate_limited"],
+                                     "next_check": result["next_check"]}
+                    break
+    finally:
+        INBOX_LOCK.release()
+
+
+def inbox_loop():
+    while not STOP.wait(1):
+        with S.lock:
+            client, uid = S.client, S.user_id
+        if client is None or uid is None:
+            continue
+        try:
+            refresh_inbox(client, uid)
+        except Exception:
+            log.exception("Falha inesperada na sincronização da central")
+            STOP.wait(15)
+
+
+def inbox_public():
+    with S.lock:
+        sources = {name:{k: v.isoformat() if isinstance(v, dt.datetime) else v
+                         for k,v in row.items() if k != 'items'} for name,row in S.inbox.items()}
+        notifications = S.inbox.get("notifications", {}).get("items", [])
+        offers = [o for o in S.inbox.get("offers", {}).get("items", []) if str(o["offerID"]) not in S.offer_actions]
+        return {"ok": True, "notifications": notifications, "offers": offers, "sources": sources,
+                "unread_count": sum(n.get("read") is False for n in notifications), "poll_seconds":15,
+                "counter_supported": False}
+
+
+@app.get("/api/inbox")
+@api
+def api_inbox(client, uid):
+    require_auth(client)
+    refresh_inbox(client, uid)
+    return jsonify(inbox_public())
+
+
+@app.post("/api/inbox/retry")
+@api
+def api_inbox_retry(client, uid):
+    require_auth(client)
+    with S.lock:
+        for row in S.inbox.values():
+            row["paused"] = False
+            if not row.get("rate_limited"):
+                row["next_check"] = None
+    return jsonify({"ok":True})
+
+
 @app.get("/api/notifications")
 @api
 def api_notifications(client, uid):
@@ -676,10 +775,19 @@ def api_notifications(client, uid):
 @app.post("/api/notifications/read")
 @api
 def api_notifications_read(client, uid):
-    ids = [str(x) for x in body().get("ids", [])]
-    if not ids:
-        raise ValueError("Nenhuma notificação selecionada.")
+    require_auth(client)
+    ids = body().get("ids")
+    if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(not isinstance(x, str) or not x or len(x)>200 for x in ids):
+        raise ValueError("Selecione de 1 a 100 notificações válidas.")
+    known = {str(n.notificationID) for n in client.get_notifications(limit=100)}
+    if not set(ids) <= known:
+        raise ValueError("Notificação não encontrada nesta conta. Atualize a central.")
     client.mark_notifications_read(ids)
+    with S.lock:
+        if S.client is client:
+            for row in S.inbox.get("notifications", {}).get("items", []):
+                if str(row["notificationID"]) in ids:
+                    row["read"] = True
     return jsonify({"ok": True})
 
 
@@ -1175,26 +1283,42 @@ def api_offers(client, uid):
 @app.post("/api/offers/action")
 @api
 def api_offer_action(client, uid):
+    require_auth(client)
     data = body()
     offer_id = int_field(data, "offer_id", "ID de oferta")
     action = data.get("action")
     if action not in ("accept", "decline"):
         raise ValueError("Ação inválida.")
-    offer = client.get_offers(to_seller=uid).get(offer_id)
-    if offer is None:
-        return fail("Oferta não encontrada entre as recebidas (talvez já tenha sido tratada).", 404)
-    if action == "decline":
-        reason = str(data.get("reason") or "").strip()[:200] or "the offer was too low"
-        client.decline_offer(offer, reason)
-        return jsonify({"ok": True, "message": "Oferta recusada."})
-    client.accept_offer(offer)
-    warning = None
-    try:  # como no bot original, abrir a conversa com o comprador após aceitar
-        client.open_conversation(offer.buyerID, offer.buyerUsername, offer.offerID)
-    except TraderieError as exc:
-        warning = str(exc)
-    return jsonify({"ok": True, "message": "Oferta aceita.", "buyer_id": offer.buyerID,
-                    "buyer_username": offer.buyerUsername, "conversation_warning": warning})
+    if data.get("confirm") is not True:
+        raise ValueError("Confirme a ação sobre a oferta.")
+    if not OFFER_ACTION_LOCK.acquire(blocking=False):
+        return fail("Já existe uma ação de oferta em andamento.", 409)
+    try:
+        with S.lock:
+            if str(offer_id) in S.offer_actions:
+                return fail("Esta oferta já foi tratada nesta sessão. Atualize a central.", 409)
+        offer = client.get_offers(to_seller=uid).get(offer_id)
+        if offer is None or offer.sellerID != uid:
+            return fail("Oferta não encontrada entre as recebidas e abertas desta conta.", 404)
+        with S.lock:
+            if S.client is not client or S.user_id != uid or not client.has_auth:
+                return fail("A conta mudou. Atualize a central.", 409)
+        if data.get("revision") != offer_revision(offer):
+            return fail("A oferta mudou. Atualize a central e revise os valores antes de confirmar.", 409)
+        if action == "decline":
+            reason = str(data.get("reason") or "").strip()[:200] or "the offer was too low"
+            client.decline_offer(offer, reason)
+        else:
+            client.accept_offer(offer)
+        with S.lock:
+            if S.client is client and S.user_id == uid:
+                S.offer_actions[str(offer_id)] = action
+                S.listings_snapshot = None
+                if "offers" in S.inbox:
+                    S.inbox["offers"]["next_check"] = None
+        return jsonify({"ok": True, "message": "Oferta aceita." if action == "accept" else "Oferta recusada."})
+    finally:
+        OFFER_ACTION_LOCK.release()
 
 
 @app.get("/api/conversations")
@@ -1272,6 +1396,7 @@ def main() -> None:
     autoconnect()
     threading.Thread(target=auto_loop, name="auto-relist", daemon=True).start()
     threading.Thread(target=rotation_loop, name="rotation-routines", daemon=True).start()
+    threading.Thread(target=inbox_loop, name="traderie-inbox", daemon=True).start()
     print(f"Painel em http://{HOST}:{PORT}  (Ctrl+C para encerrar)")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)  # nunca use 0.0.0.0
 

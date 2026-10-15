@@ -52,7 +52,7 @@ class CatalogSearch(TestCase):
         js=(root/'app.js').read_text()
         assert 'editor-species' in html and 'editor-category-tabs' in html
         assert 'offer-backdrop' in html and 'listing-offers-list' in html
-        assert 'data-card-offers' in js and 'data-counter-offer' in js
+        assert 'data-card-offers' in js and 'data-native-counter' in js
         assert 'listing-details"><div class="property-list always-visible' in js
 
 try:

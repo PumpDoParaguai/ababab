@@ -12,6 +12,10 @@ let modalSelection = [];
 let modalFocusBefore = null;
 let currentPage = "market";
 let rotationCache = [];
+let inboxData = null, inboxBusy = false, inboxFocus = null, inboxIdentity = '';
+let inboxSeen = new Set(), inboxInitialized = false, offerActionBusy = false;
+let inboxFingerprint = '', inboxNotificationFingerprint = '';
+
 let modalItemName = "";
 let scheduleDraft = [];
 let editorPurpose = "publish";
@@ -30,9 +34,7 @@ let editorPage = 0;
 let offersForListingId = null;
 let offersModalFocus = null;
 let activeListCategory = "all";
-let activeOffersCategory = "all";
 let offersCache = [];
-let offersKind = "received";
 let editorCategory = "species";
 const MARKET_CATEGORIES = ["all","species","slots","plushies","palettes","other"];
 let tradeChatContext = null;
@@ -102,6 +104,12 @@ const canUse = (ep) => !!state.configured && (state.auth_set || (state.policy ||
 
 function applyState(s) {
   const previousPermission = JSON.stringify([state.auth_set, state.policy]);
+  const identity=s.auth_set?`${s.slug}:${s.user_id}`:'';
+  if(identity!==inboxIdentity){
+    inboxIdentity=identity;inboxData=null;inboxSeen.clear();inboxInitialized=false;inboxFingerprint='';inboxNotificationFingerprint='';
+    $('inbox-badge').hidden=true;renderInbox();
+    if(identity)setTimeout(()=>void syncInbox(),0);
+  }
   state = s;
   if(editorSelected) editorPreview();
   $("auto-next").dataset.deadline=s.auto_relist ? (s.next_auto_run || "") : "";
@@ -217,8 +225,9 @@ function propertyIconUrl(label) {
   return `${COS_PROPERTY_CDN}${basename}.png`;
 }
 function propertyIcon(label, providedUrl) {
-  const src = propertyIconUrl(label) || imageSafe(providedUrl);
-  return src ? `<img class="mutation-icon" src="${esc(src)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-property-icon="1">` : `<span class="mutation-symbol" aria-hidden="true">✦</span>`;
+  const corrupt=/^corrupt(ed)?$/i.test(String(label).trim());
+  const sources=[...new Set([imageSafe(providedUrl),propertyIconUrl(label),corrupt?`${COS_PROPERTY_CDN}Corrupted.png`:null,corrupt?'/static/icons/corrupt.svg':'/static/icons/mutation.svg'].filter(Boolean))];
+  return `<img class="mutation-icon" src="${esc(sources[0])}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-property-icon="1" data-icon-fallbacks="${esc(JSON.stringify(sources.slice(1)))}">`;
 }
 function propertyBadge(label, providedUrl, kind = "mutation-icon-chip") {
   const clean = String(label || "").trim().replace(/_/g, " ");
@@ -230,6 +239,7 @@ function propHtml(listing) {
     const rawName = String(p.name || "Propriedade");
     const name = rawName.replace(/\s*\([^)]*\)\s*$/, "").replace(/([a-z])([A-Z])/g,"$1 $2").trim();
     const value = String(p.value ?? "").trim();
+    if (/species or (slot|stored)/i.test(name)) return `<span class="property-chip slot-chip">${esc(/^species$/i.test(value)?'Espécie':/slot|stored/i.test(value)?'Slot':value)}</span>`;
     const yes = /^(true|yes|sim|1)$/i.test(value);
     const no = /^(false|no|não|0)$/i.test(value);
     const isBool = p.type === "bool" || yes || no;
@@ -285,7 +295,7 @@ function tickElapsed() {
   if(Number.isFinite(deadline)) $('auto-next').textContent=deadline>now?'Próxima verificação em '+duration(deadline-now):'Verificando disponibilidade…';
   if(lastSync && !syncError) $('sync-status').textContent='Sincronizado '+timeAgo(lastSync,now);
   document.querySelectorAll('[data-updated]').forEach(node => {
-    const label = 'Atualizado ' + timeAgo(node.dataset.updated, now);
+    const label = (node.dataset.timePrefix||'Atualizado ') + timeAgo(node.dataset.updated, now);
     if (node.textContent !== label) node.textContent = label;
   });
 }
@@ -808,7 +818,7 @@ async function loadRotations(){
   const fingerprint=JSON.stringify(d);
   if(fingerprint===rotationFingerprint)return;
   rotationFingerprint=fingerprint;
-  $('rotation-list').innerHTML=rotationCache.map((r,i)=>`<article class="rotation-card ${r.enabled?'is-running':''}"><div class="rotation-head"><span class="queue-number">${String(i+1).padStart(2,'0')}</span><strong>${esc(r.item_name)}</strong><span class="eligibility ${r.enabled?'':'pending'}">${r.enabled?'Em andamento':'Pausado'}</span></div><p class="muted">${esc(r.template.amount)}× · ${esc(saleLabel(r.template))} · Renova a cada ${Number(r.interval_minutes)} min</p><div class="schedule-meta"><span>${Number(r.cycles||0)} publicações</span><strong data-schedule-time="${esc(r.enabled?r.next_run||'':'')}" data-queue-gate="${esc(d.queue_not_before||'')}">${r.enabled?'Na fila':'Pausado'}</strong></div><p class="routine-note">${esc(r.last_result||'Pronto para iniciar.')}</p><details class="schedule-template"><summary>Ver configurações</summary><p>${esc((r.template.properties||[]).map(p=>p.name+': '+String(p[p.type])).join(' · ')||'Sem características adicionais')}</p></details><div class="actions"><button class="secondary" data-rotation-id="${esc(r.id)}" data-rotation-action="${r.enabled?'pause':'enable'}">${r.enabled?'Pausar':'Retomar'}</button><button class="danger" data-rotation-id="${esc(r.id)}" data-rotation-action="remove" ${r.enabled||r.running?'disabled':''}>Remover</button></div></article>`).join('')||'<div class="empty-state"><span>◷</span><strong>Sua próxima publicação pode ser automática</strong><p>Adicione itens do catálogo e salve sua primeira fila.</p></div>';
+  $('rotation-list').innerHTML=rotationCache.map((r,i)=>`<article class="rotation-card ${r.enabled?'is-running':''}"><div class="rotation-head"><span class="queue-number">${String(i+1).padStart(2,'0')}</span><strong>${esc(r.item_name)}</strong><span class="eligibility ${r.enabled?'':'pending'}">${r.enabled?'Em andamento':'Pausado'}</span></div><p class="muted">${esc(r.template.amount)}× · ${esc(saleLabel(r.template))} · Renova a cada ${Number(r.interval_minutes)} min</p><div class="schedule-meta"><span>${Number(r.cycles||0)} publicações</span><strong data-schedule-time="${esc(r.enabled?r.next_run||'':'')}" data-queue-gate="${esc(d.queue_not_before||'')}">${r.enabled?'Na fila':'Pausado'}</strong></div><p class="routine-note">${esc(r.last_result||'Pronto para iniciar.')}</p><details class="schedule-template"><summary>Ver configurações</summary><p>${esc((r.template.properties||[]).map(p=>(/species or (slot|stored)/i.test(p.name)?(/^species$/i.test(p[p.type])?'Espécie':'Slot'):p.name+': '+String(p[p.type]))).join(' · ')||'Sem características adicionais')}</p></details><div class="actions"><button class="secondary" data-rotation-id="${esc(r.id)}" data-rotation-action="${r.enabled?'pause':'enable'}">${r.enabled?'Pausar':'Retomar'}</button><button class="danger" data-rotation-id="${esc(r.id)}" data-rotation-action="remove" ${r.enabled||r.running?'disabled':''}>Remover</button></div></article>`).join('')||'<div class="empty-state"><span>◷</span><strong>Sua próxima publicação pode ser automática</strong><p>Adicione itens do catálogo e salve sua primeira fila.</p></div>';
   tickSchedules();
 }
 function tickSchedules(){
@@ -833,7 +843,7 @@ async function openListingOffers(id) {
   offersModalFocus = document.activeElement;
   const listing = listingsCache.find(x => Number(x.id) === id);
   $('listing-offers-title').textContent = listing?.item || 'Anúncio #'+id;
-  $('offer-modal-description').textContent = `Anúncio #${id} · Ofertas abertas recebidas. Contrapropostas são mensagens de negociação, não uma alteração formal da oferta.`;
+  $('offer-modal-description').textContent = 'Revise o que o comprador oferece antes de responder.';
   $('offer-backdrop').classList.remove('hidden');
   $('offer-backdrop').setAttribute('aria-hidden','false');
   $('offer-close').focus();
@@ -856,115 +866,113 @@ async function loadListingOffers(id = offersForListingId) {
     return fail('listing-offers-status', d);
   }
   const offers = d.offers || [];
-  $('listing-offers-list').innerHTML = offers.map(o => `<article class="offer-modal-entry">
-     <div class="offer-modal-top"><strong>${esc(o.buyerUsername || 'Usuário #'+o.buyerID)}</strong><span class="muted">Oferta #${esc(o.offerID)}</span></div>
-     <p class="muted">Comprador #${esc(o.buyerID)}</p>
-     <div class="actions"><button class="secondary" data-offer-chat="${Number(o.offerID)}" data-offer-chat-kind="received">✉ Chat</button><button class="secondary" data-counter-offer="${Number(o.offerID)}" ${canUse('messages.send')?'':'disabled'}>Contraproposta via mensagem</button>
-     <button class="danger" data-decline-offer="${Number(o.offerID)}" ${canUse('offers.deny')?'':'disabled'}>Recusar</button></div>
-     <div class="counter-editor hidden" data-counter-box="${Number(o.offerID)}"><label for="counter-message-${Number(o.offerID)}">Sua proposta por mensagem (não é oferta formal)</label><textarea id="counter-message-${Number(o.offerID)}" data-counter-text="${Number(o.offerID)}" maxlength="800" rows="3" placeholder="Ex.: Obrigado pela oferta! Aceitaria 2x ...?"></textarea><div class="actions"><button data-send-counter="${Number(o.offerID)}">Enviar mensagem</button><button class="secondary" data-counter-cancel="${Number(o.offerID)}">Cancelar</button></div></div>
-  </article>`).join('') || '<div class="empty-state"><strong>Nenhuma oferta aberta</strong><p>As ofertas recebidas para este anúncio aparecerão aqui.</p></div>';
+  offersCache=offers;
+  $('listing-offers-list').innerHTML = offers.map(renderIncomingOffer).join('') || '<div class="empty-state"><strong>Nenhuma oferta aberta</strong><p>As ofertas recebidas para este anúncio aparecerão aqui.</p></div>';
   say('listing-offers-status',offers.length+' oferta(s) recebida(s).',true);
 }
-async function declineListingOffer(id) {
-  if (!confirm('Recusar a oferta #'+id+'?')) return;
-  const d = await api('/api/offers/action','POST',{offer_id:id,action:'decline'});
-  if (!d.ok) return fail('listing-offers-status',d);
-  showToast('Oferta #'+id+' recusada.',true);
-  loadListingOffers();
-}
-async function sendListingCounterMessage(id) {
-  const value = document.querySelector(`[data-counter-text="${id}"]`)?.value.trim();
-  if (!value) return say('listing-offers-status','Escreva a mensagem de contraproposta.');
-  if (!confirm('Enviar esta mensagem de negociação? A oferta original permanecerá aberta.')) return;
-  const d = await api('/api/offers/counter-message','POST',{offer_id:id,message:value,confirm:true});
-  if (!d.ok) return fail('listing-offers-status',d);
-  say('listing-offers-status',d.message+(d.conversation_warning?' '+d.conversation_warning:''),true);
-  showToast('Mensagem de contraproposta enviada.',true);
-  document.querySelector(`[data-counter-box="${id}"]`)?.classList.add('hidden');
-}
 
-// ---- notificações ------------------------------------------------------------
-async function loadNotifications() {
-  const d = await api("/api/notifications?limit=50");
-  if (!d.ok) return fail("notifstatus", d);
-  say("notifstatus", `${d.notifications.length} notificação(ões).`, true);
-  $("notifications").innerHTML = d.notifications.map((n) => `
-    <div class="item"><div class="itemtop"><b>${esc(n.text)}</b><input type="checkbox" class="notifcheck" value="${esc(n.notificationID)}" aria-label="Selecionar"></div>
-    <small>${esc(n.date || "")} · Usuário ${esc(n.fromUserID ?? "—")} · Anúncio ${esc(n.listingID ?? "—")}</small></div>`).join("") || '<span class="muted">Sem notificações.</span>';
+function offeredSummary(o){
+  const groups=new Map();
+  for(const p of o.prices||[]){if(!groups.has(p.group))groups.set(p.group,[]);groups.get(p.group).push(`${Number(p.quantity).toLocaleString('pt-BR')} × ${p.name}`);}
+  return [...groups.values()].map(g=>g.join(' + ')).join(' ou ')||'Valor não informado pelo Traderie';
 }
-
-async function markRead() {
-  const ids = [...document.querySelectorAll(".notifcheck:checked")].map((x) => x.value);
-  if (!ids.length) return say("notifstatus", "Selecione as notificações primeiro.");
-  const d = await api("/api/notifications/read", "POST", { ids });
-  d.ok ? (say("notifstatus", "Marcadas como lidas.", true), loadNotifications()) : fail("notifstatus", d);
+function renderIncomingOffer(o){
+  const summary=offeredSummary(o), id=Number(o.offerID);
+  const supported=inboxData?.counter_supported===true;
+  const disabled=!state.auth_set||offerActionBusy;
+  return `<article class="incoming-offer" data-incoming-offer="${id}"><div class="incoming-heading"><strong>${esc(o.itemName)}</strong><span class="muted">${Number(o.amount)}×</span></div><div class="incoming-content"><div><p class="offer-label">VOCÊ RECEBE</p><strong class="offered-value">${esc(summary)}</strong><p class="offer-buyer">${esc(o.buyerUsername||'Comprador')}</p>${o.buyer_rating!=null||o.buyer_reviews!=null?`<small class="offer-rating">${o.buyer_rating!=null?'★ '+Number(o.buyer_rating).toLocaleString('pt-BR'):''} ${o.buyer_reviews!=null?'· '+Number(o.buyer_reviews)+' avaliações':''}</small>`:''}<div class="property-list">${propHtml({properties:o.properties||{}})}</div></div><div class="incoming-actions"><button class="secondary" data-offer-chat="${id}" data-offer-chat-kind="received" ${disabled?'disabled':''}>Mensagem</button><button data-inbox-action="accept" data-offer-id="${id}" ${disabled?'disabled':''}>Aceitar</button><button class="secondary" data-inbox-action="decline" data-offer-id="${id}" ${disabled?'disabled':''}>Recusar</button>${supported?`<button class="counter-button" data-native-counter="${id}" ${disabled?'disabled':''}>Counter Offer</button>`:`<a class="counter-button external-counter" href="https://traderie.com/creaturesofsonaria/listing/${Number(o.listingID)}" target="_blank" rel="noopener noreferrer" title="A contraproposta dentro do painel ainda não está disponível">Counter Offer no Traderie ↗</a>`}</div></div><small class="offer-date" ${o.created_at?`data-updated="${esc(o.created_at)}" data-time-prefix="Recebida "`:''}>${o.created_at?'Recebida '+esc(timeAgo(o.created_at)):''}</small><div class="counter-editor hidden" data-native-counter-box="${id}"><label for="counter-shooms-${id}">Sua contraproposta em Shooms</label><input id="counter-shooms-${id}" type="number" min="1" max="999999999" step="1"/><div class="actions"><button data-send-native-counter="${id}">Enviar contraproposta</button><button class="secondary" data-close-native-counter="${id}">Cancelar</button></div></div><div class="status" data-offer-action-status="${id}" role="status"></div></article>`;
 }
-
-// ---- ofertas -----------------------------------------------------------------
-async function loadOffers(kind) {
-  $("recvtab").classList.toggle("active", kind === "received");
-  $("senttab").classList.toggle("active", kind === "sent");
-  const d = await api("/api/offers?kind=" + kind);
-  if (!d.ok) return fail("offerstatus", d);
-  offersCache = d.offers || [];
-  offersKind = kind;
-  renderOffersByCategory();
-}
-function offerCategory(o) {
-  const linked = listingsCache.find(x=>Number(x.id)===Number(o.listingID)) ||
-    listingsCache.find(x=>Number(x.item_id)===Number(o.itemID));
-  return o.item_category && o.item_category !== 'other' ? o.item_category : (linked?.category || 'other');
-}
-function renderOffersByCategory() {
-  const offers = offersCache.filter(o=>activeOffersCategory==='all'||offerCategory(o)===activeOffersCategory);
-  document.querySelectorAll('[data-offers-cat-count]').forEach(el=>{const key=el.dataset.offersCatCount;el.textContent=key==='all'?offersCache.length:offersCache.filter(o=>offerCategory(o)===key).length;});
-  say("offerstatus", offers.length + " oferta(s) nesta categoria.", true);
-  const kind = offersKind;
-  $("offers").innerHTML = offers.map(o => {
-    const linked = listingsCache.find(x=>Number(x.id)===Number(o.listingID)) || listingsCache.find(x=>Number(x.item_id)===Number(o.itemID));
-    const src = imageSafe(o.image_url || linked?.image_url || resolvedImages.get(String(o.itemID)));
-    const image = src ? `<img class="offer-art" src="${esc(src)}" alt="${esc(o.itemName)}" loading="lazy" referrerpolicy="no-referrer" data-image-fallback="1">` : `<div class="offer-art offer-art-placeholder" aria-hidden="true">${esc(String(o.itemName || '?').slice(0,1))}</div>`;
-    const chatActions=`<div class="actions offer-actions"><button class="secondary" data-offer-chat="${Number(o.offerID)}" data-offer-chat-kind="${esc(kind)}" ${canUse('conversations')?'':'disabled'}>✉ Chat</button><button class="secondary" data-offer-chat="${Number(o.offerID)}" data-offer-chat-kind="${esc(kind)}" ${canUse('conversations')?'':'disabled'}>Negociar por mensagem</button>${kind==='received'?`<button data-ep="offers.accept" data-offer="accept" data-id="${Number(o.offerID)}" ${canUse('offers.accept')?'':'disabled'}>Aceitar</button><button class="danger" data-ep="offers.deny" data-offer="decline" data-id="${Number(o.offerID)}" ${canUse('offers.deny')?'':'disabled'}>Recusar</button>`:''}</div>`;
-    return `<div class="item offer-card" data-offer-item-id="${Number(o.itemID)}"><div class="offer-card-header">${image}<div class="offer-card-text"><b>${esc(o.itemName)} — oferta #${esc(o.offerID)}</b><p>${kind === "received" ? "De: " + esc(o.buyerUsername) + " (ID " + esc(o.buyerID) + ")" : "Para: " + esc(o.sellerUsername) + " (ID " + esc(o.sellerID) + ")"}</p><small>Anúncio #${esc(o.listingID)} · quantidade ${esc(o.amount)}</small></div></div>${chatActions}</div>`;
-  }).join("") || '<span class="muted">Nenhuma oferta aberta.</span>';
-  void resolveOfferImages();
-}
-async function resolveOfferImages() {
-  const pending = offersCache.filter(o=>o.itemID && !imageSafe(o.image_url) && !resolvedImages.has(String(o.itemID)));
-  const ids = [...new Set(pending.map(o=>String(o.itemID)))].slice(0,36);
-  for(let i=0;i<ids.length;i+=12){
-    const d=await api('/api/item-images?ids='+ids.slice(i,i+12).join(','));
-    if(!d.ok)break;
-    for(const [key,url] of Object.entries(d.images||{})) if(imageSafe(url))resolvedImages.set(String(key),url);
+function offerById(id){return inboxData?.offers?.find(o=>Number(o.offerID)===id)||offersCache.find(o=>Number(o.offerID)===id);}
+function offerStatus(id,message,ok=false){document.querySelectorAll(`[data-offer-action-status="${id}"]`).forEach(el=>{el.textContent=message;el.className='status '+(ok?'ok':'err');});}
+async function incomingAction(id,action){
+  const offer=offerById(id);if(!offer||offerActionBusy)return;
+  const question=action==='accept'?`Aceitar ${offeredSummary(offer)} por ${offer.amount}× ${offer.itemName}, de ${offer.buyerUsername}?`:`Recusar a oferta de ${offer.buyerUsername} por ${offer.itemName}?`;
+  if(!confirm(question))return;
+  offerActionBusy=true;
+  document.querySelectorAll('[data-inbox-action],[data-native-counter],[data-send-native-counter]').forEach(b=>b.disabled=true);
+  offerStatus(id,'Enviando…',true);
+  try{
+    const d=await api('/api/offers/action','POST',{offer_id:id,action,confirm:true,revision:offer.revision});
+    if(!d.ok){offerStatus(id,d.error);return;}
+    showToast(d.message,true);
+    if(inboxData){inboxData.offers=inboxData.offers.filter(o=>Number(o.offerID)!==id);renderInbox();}
+    if(offersForListingId)await loadListingOffers();
+    await syncInbox();
+    void syncListingsQuietly();
+  }finally{
+    offerActionBusy=false;
+    document.querySelectorAll('[data-inbox-action]').forEach(b=>b.disabled=!state.auth_set);
+    document.querySelectorAll('[data-native-counter]').forEach(b=>b.disabled=!state.auth_set||inboxData?.counter_supported!==true);
+    document.querySelectorAll('[data-send-native-counter]').forEach(b=>b.disabled=!state.auth_set);
   }
-  // Atualiza só as imagens: não recria a lista (nem dispara uma nova consulta).
-  document.querySelectorAll('.offer-card').forEach((card)=>{
-    const id = card.dataset.offerItemId;
-    const o=offersCache.find(entry=>String(entry.itemID)===id); if(!o)return;
-    const img=imageSafe(o.image_url || resolvedImages.get(id));
-    const placeholder=card.querySelector('.offer-art-placeholder');
-    if(img && placeholder){const node=document.createElement('img');node.className='offer-art';node.loading='lazy';node.referrerPolicy='no-referrer';node.src=img;node.alt=o.itemName||'Item';placeholder.replaceWith(node);}
-  });
 }
-
-async function offerAction(id, action) {
-  let reason;
-  if (action === "decline") {
-    reason = prompt("Motivo da recusa (vazio = padrão: “the offer was too low”):", "");
-    if (reason === null) return; // cancelou
-  } else if (!confirm(`Tem certeza que deseja aceitar a oferta #${id}?`)) return;
-  const d = await api("/api/offers/action", "POST", { offer_id: id, action, reason });
-  if (!d.ok) return fail("offerstatus", d);
-  say("offerstatus", (d.message || "Concluído.") + (d.conversation_warning ? " Aviso ao abrir conversa: " + d.conversation_warning : ""), true);
-  if (action === "accept" && d.buyer_id && confirm("Enviar um cumprimento para " + (d.buyer_username || "#" + d.buyer_id) + "?")) {
-    const msg = prompt("Mensagem:", "Hello! wanna trade? which region are you in?");
-    if (msg && msg.trim()) {
-      const s = await api("/api/messages", "POST", { user_id: d.buyer_id, message: msg.trim() });
-      say("offerstatus", s.ok ? "Oferta aceita e cumprimento enviado." : "Oferta aceita; falha no cumprimento: " + s.error, s.ok);
-    }
+async function sendNativeCounter(id){
+  offerStatus(id,'Aguardando confirmação do formato de contraproposta do Traderie.');
+}
+function renderInbox(){
+  const d=inboxData;
+  if(!d){
+    $('inbox-notifications').innerHTML='<p class="muted">Conecte sua conta para receber notificações.</p>';
+    $('inbox-offers').innerHTML='<p class="muted">Suas ofertas aparecerão aqui.</p>';
+    $('inbox-offer-count').textContent='0';$('inbox-sync').textContent='Conecte sua conta para sincronizar.';$('inbox-sync').dataset.inboxChecked='';say('inbox-status','');return;
   }
-  loadOffers("received");
+  const errors=Object.entries(d.sources||{}).filter(([,s])=>s.error).map(([name,s])=>`${name==='offers'?'Ofertas':'Notificações'}: ${s.error}`);
+  say('inbox-status',errors.join(' · '));
+  const checked=Object.values(d.sources||{}).map(s=>s.checked_at).filter(Boolean).sort()[0];
+  $('inbox-sync').textContent=checked?`Última sincronização ${timeAgo(checked)}`:'Sincronizando com o Traderie…';
+  $('inbox-sync').dataset.inboxChecked=checked||'';
+  const count=d.unread_count||d.offers?.length||0;
+  $('inbox-badge').textContent=count;$('inbox-badge').hidden=!count;
+  $('inbox-offer-count').textContent=d.offers?.length||0;
+  const notifications=JSON.stringify(d.notifications||[]);
+  if(notifications!==inboxNotificationFingerprint){
+    const checkedIds=new Set([...document.querySelectorAll('.notifcheck:checked')].map(el=>el.value));
+    $('inbox-notifications').innerHTML=(d.notifications||[]).map(n=>`<article class="inbox-notice ${n.read===false?'unread':''}"><label><input class="notifcheck" type="checkbox" value="${esc(n.notificationID)}" ${checkedIds.has(String(n.notificationID))?'checked':''}/><span>${esc(n.text)}</span></label><small>${esc(timeAgo(n.date))}</small>${n.listingID?`<button class="secondary" data-notice-listing="${Number(n.listingID)}">Ver ofertas do anúncio</button>`:''}</article>`).join('')||'<p class="muted">Nenhuma notificação recebida.</p>';
+    inboxNotificationFingerprint=notifications;
+  }
+  const fingerprint=JSON.stringify([d.offers,d.counter_supported,state.auth_set]);
+  if(fingerprint!==inboxFingerprint&&!$('inbox-offers').querySelector('.counter-editor:not(.hidden)')){
+    $('inbox-offers').innerHTML=(d.offers||[]).map(renderIncomingOffer).join('')||'<div class="empty-state"><strong>Nenhuma oferta aberta</strong><p>As novas ofertas aparecerão automaticamente.</p></div>';
+    inboxFingerprint=fingerprint;
+  }
 }
+async function syncInbox(){
+  if(inboxBusy||!state.auth_set||document.hidden)return;
+  inboxBusy=true;const identity=inboxIdentity;
+  try{
+    const d=await api('/api/inbox');
+    if(identity!==inboxIdentity)return;
+    if(!d.ok){say('inbox-status',d.error);$('inbox-sync').textContent='Sem sincronização · confira sua conexão';return;}
+    const ids=[...(d.notifications||[]).map(n=>'n:'+n.notificationID),...(d.offers||[]).map(o=>'o:'+o.offerID)];
+    const fresh=ids.filter(id=>!inboxSeen.has(id));
+    if(inboxInitialized&&fresh.length){showToast('Nova atividade no Traderie. Abra Notificações.',true);uiTone();}
+    for(const id of ids)inboxSeen.add(id);
+    if(inboxSeen.size>2000)inboxSeen=new Set(ids);
+    inboxInitialized=true;inboxData=d;renderInbox();
+  }finally{inboxBusy=false;}
+}
+function openInbox(){
+  inboxFocus=document.activeElement;
+  $('inbox-backdrop').classList.remove('hidden');$('inbox-backdrop').setAttribute('aria-hidden','false');
+  $('inbox-close').focus();renderInbox();void syncInbox();
+}
+function closeInbox(){
+  $('inbox-backdrop').classList.add('hidden');$('inbox-backdrop').setAttribute('aria-hidden','true');inboxFocus?.focus();
+}
+async function retryInbox(){
+  const d=await api('/api/inbox/retry','POST',{});
+  if(!d.ok)return fail('inbox-status',d);
+  await syncInbox();
+}
+async function markRead(){
+  const ids=[...document.querySelectorAll('.notifcheck:checked')].map(el=>el.value);
+  if(!ids.length)return say('inbox-status','Selecione as notificações.');
+  const d=await api('/api/notifications/read','POST',{ids});
+  if(!d.ok)return fail('inbox-status',d);
+  await syncInbox();
+}
+setInterval(()=>void syncInbox(),5000);
+setInterval(()=>{const date=$('inbox-sync').dataset.inboxChecked;if(date)$('inbox-sync').textContent='Última sincronização '+timeAgo(date);},1000);
 
 // ---- Chat vinculado à oferta (API de mensagens confirmada no cliente) ----------
 async function showOfferChat(id, kind='received') {
@@ -1166,15 +1174,19 @@ document.addEventListener("click", (e) => {
   else if (t.id === "modal-delete") deleteSelected();
   else if (t.id === "btn-open-create") openEditor();
   else if (t.dataset.listCategory) {activeListCategory=t.dataset.listCategory; document.querySelectorAll("[data-list-category]").forEach(b=>{const a=b.dataset.listCategory===activeListCategory;b.classList.toggle("active",a);b.setAttribute("aria-pressed",String(a));});renderListings();}
-  else if (t.dataset.offersCategory) {activeOffersCategory=t.dataset.offersCategory;document.querySelectorAll('[data-offers-category]').forEach(b=>b.classList.toggle('active',b.dataset.offersCategory===activeOffersCategory));renderOffersByCategory();}
   else if (t.dataset.editorCategory) setEditorCategory(t.dataset.editorCategory);
   else if (t.id === 'offer-close' || t.id === 'offer-cancel') closeListingOffers();
   else if (t.id === 'offer-refresh') loadListingOffers();
   else if (d.showOffers) openListingOffers(Number(d.showOffers));
-  else if (d.counterOffer) document.querySelector(`[data-counter-box="${d.counterOffer}"]`)?.classList.remove('hidden');
-  else if (d.counterCancel) document.querySelector(`[data-counter-box="${d.counterCancel}"]`)?.classList.add('hidden');
-  else if (d.sendCounter) sendListingCounterMessage(Number(d.sendCounter));
-  else if (d.declineOffer) declineListingOffer(Number(d.declineOffer));
+  else if (t.id==='btn-inbox')openInbox();
+  else if (t.id==='inbox-close')closeInbox();
+  else if (t.id==='inbox-refresh')retryInbox();
+  else if (t.id==='inbox-read')markRead();
+  else if (d.noticeListing)openListingOffers(Number(d.noticeListing));
+  else if (d.inboxAction)incomingAction(Number(d.offerId),d.inboxAction);
+  else if (d.nativeCounter)t.closest('.incoming-offer').querySelector('.counter-editor').classList.remove('hidden');
+  else if (d.closeNativeCounter)t.closest('.counter-editor').classList.add('hidden');
+  else if (d.sendNativeCounter)sendNativeCounter(Number(d.sendNativeCounter));
   else if (d.marketTab) switchMarketTab(d.marketTab);
   else if (t.id === 'schedule-add') openEditor(null,'schedule');
   else if (t.id === 'schedule-save') saveSchedule();
@@ -1202,7 +1214,6 @@ document.addEventListener("click", (e) => {
   else if (t.id === "btn-diagnose") diagnose();
   else if (t.id === "btn-status") loadStatus();
   else if (t.id === "btn-listings") loadListings();
-  else if (t.id === "btn-notifs") loadNotifications();
   else if (t.id === "btn-markread") markRead();
   else if (t.id === "btn-send") sendMessage();
   else if (t.id === "btn-search") searchUser();
@@ -1211,8 +1222,6 @@ document.addEventListener("click", (e) => {
   else if (d.status !== undefined) setAccountStatus(d.status);
   else if (d.relistall !== undefined) relistAll();
   else if (d.relist) relistOne(Number(d.relist));
-  else if (d.offers) loadOffers(d.offers);
-  else if (d.offer) offerAction(Number(d.id), d.offer);
   else if (d.convos !== undefined) loadConversations(d.convos === "1");
   else if (d.chatUser) openChat(Number(d.chatUser), Number(d.chatId));
   else if (d.convoAction) convoAction(Number(d.id), d.convoAction, d.active === "true");
@@ -1229,6 +1238,7 @@ $("modal-list").addEventListener("change", (e) => {
 });
 $("modal-backdrop").addEventListener("click", (e) => { if (e.target === $("modal-backdrop")) closeGroupModal(); });
 $("editor-backdrop").addEventListener("click", (e) => { if (e.target === $("editor-backdrop")) closeEditor(); });
+$('inbox-backdrop').addEventListener('click',e=>{if(e.target===$('inbox-backdrop'))closeInbox();});
 $('offer-backdrop').addEventListener('click', e => { if (e.target === $('offer-backdrop')) closeListingOffers(); });
 $('trade-chat-backdrop').addEventListener('click',e=>{if(e.target===$('trade-chat-backdrop'))closeOfferChat();});
 
@@ -1248,9 +1258,11 @@ document.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-card-offers]")) {
     e.preventDefault(); openListingOffers(Number(e.target.dataset.cardOffers)); return;
   }
-  if (e.key !== "Escape") return; if (!$('trade-chat-backdrop').classList.contains('hidden')) closeOfferChat(); else if (!$('offer-backdrop').classList.contains('hidden')) closeListingOffers(); else if (!$('editor-backdrop').classList.contains('hidden')) closeEditor(); else if (!$('modal-backdrop').classList.contains('hidden')) closeGroupModal(); });
+  if (e.key !== "Escape") return; if (!$('trade-chat-backdrop').classList.contains('hidden')) closeOfferChat(); else if (!$('offer-backdrop').classList.contains('hidden')) closeListingOffers(); else if (!$('inbox-backdrop').classList.contains('hidden')) closeInbox(); else if (!$('editor-backdrop').classList.contains('hidden')) closeEditor(); else if (!$('modal-backdrop').classList.contains('hidden')) closeGroupModal(); });
 document.addEventListener("error", (e) => {
   if (!(e.target instanceof HTMLImageElement) || !e.target.matches("[data-property-icon]")) return;
+  const sources=JSON.parse(e.target.dataset.iconFallbacks||'[]');
+  if(sources.length){e.target.dataset.iconFallbacks=JSON.stringify(sources.slice(1));e.target.src=sources[0];return;}
   const fallback = document.createElement("span");
   fallback.className = "mutation-symbol";
   fallback.setAttribute("aria-hidden", "true");
@@ -1327,4 +1339,4 @@ document.addEventListener('keydown',event=>{
   if(event.shiftKey&&(document.activeElement===first||!dialog.contains(document.activeElement))){event.preventDefault();last.focus();}
   else if(!event.shiftKey&&(document.activeElement===last||!dialog.contains(document.activeElement))){event.preventDefault();first.focus();}
 });
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){tickElapsed();void syncListingsQuietly();void refreshState();}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){tickElapsed();void syncListingsQuietly();void refreshState();void syncInbox();}});

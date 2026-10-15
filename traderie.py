@@ -129,6 +129,8 @@ class Notification:
     date: str
     fromUserID: Optional[int]
     listingID: Optional[int]
+    offerID: Optional[int] = None
+    read: Optional[bool] = None
 
 
 @dataclass
@@ -158,6 +160,11 @@ class Offer:
     itemID: int
     item_category: str = "other"
     image_url: Optional[str] = None
+    prices: list = field(default_factory=list)
+    created_at: Optional[str] = None
+    buyer_reviews: Optional[int] = None
+    buyer_rating: Optional[float] = None
+    properties: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -300,7 +307,10 @@ def parse_listing_property(raw: Dict[str, Any]) -> Optional[ListingProperty]:
     if kind not in ("string", "number", "bool") or kind not in raw:
         logger.warning("Tipo de propriedade desconhecido: %r", kind)
         return None
-    return ListingProperty(id=raw.get("id"), name=str(raw.get("property") or raw.get("name") or "Propriedade"), value=str(raw.get(kind)), type=kind, icon_url=normalize_image_url(raw.get("icon_url") or raw.get("icon") or raw.get("image_url")))
+    definition = raw.get("property") if isinstance(raw.get("property"), dict) else {}
+    name = definition.get("name") or raw.get("name") or (raw.get("property") if isinstance(raw.get("property"), str) else None) or "Propriedade"
+    return ListingProperty(id=raw.get("id"), name=str(name), value=str(raw.get(kind)), type=kind,
+                           icon_url=find_item_image(raw, restricted=True) or find_item_image(definition, restricted=True))
 
 
 # Extrai apenas URLs apontadas por campos de arte. Não trata a URL de um
@@ -408,6 +418,44 @@ def parse_listing(raw: Dict[str, Any]) -> Optional[Listing]:
     return lst
 
 
+def offer_prices(raw: dict) -> list:
+    """Keep offered amounts/items, not market valuations or arbitrary response data."""
+    import math
+    result = []
+    rows = raw.get("prices") or raw.get("currencyGroupPrices") or []
+    if not isinstance(rows, list):
+        rows = []
+    for row in rows[:100]:
+        if not isinstance(row, dict):
+            continue
+        group = _int(row.get("group")) or 0
+        if row.get("nmt") is not None:
+            quantity, name = row["nmt"], "Shooms"
+        else:
+            item = row.get("item") if isinstance(row.get("item"), dict) else {}
+            quantity = row.get("quantity", row.get("amount"))
+            name = row.get("name") or item.get("name")
+        try:
+            value = float(quantity)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if isinstance(quantity, bool) or not math.isfinite(value) or value <= 0 or not isinstance(name, str):
+            continue
+        result.append({"group": group, "quantity": int(value) if value.is_integer() else value,
+                       "name": name[:180], "image_url": find_item_image(row)})
+    if not result and raw.get("nmt") is not None:
+        return offer_prices({"currencyGroupPrices": [{"nmt": raw["nmt"], "group": 0}]})
+    return result
+
+
+def optional_rating(value):
+    try:
+        number = float(value)
+        return number if 0 <= number <= 5 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_offer(raw: Dict[str, Any]) -> Optional[Offer]:
     try:
         listing = raw["listing"]
@@ -419,8 +467,14 @@ def parse_offer(raw: Dict[str, Any]) -> Optional[Offer]:
             sellerUsername=listing["seller"].get("username", ""),
             buyerID=int(raw["buyer"]["id"]),
             buyerUsername=raw["buyer"].get("username", ""),
-            amount=int(listing.get("amount") or 1),
+            amount=int(raw.get("amount") or listing.get("amount") or 1),
             itemID=int(listing["item"]["id"]),
+            prices=offer_prices(raw),
+            created_at=raw.get("created_at") if isinstance(raw.get("created_at"), str) else None,
+            buyer_reviews=_int(raw["buyer"].get("reviews")),
+            buyer_rating=optional_rating(raw["buyer"].get("rating")),
+            properties={p.name:p for entry in (listing.get("properties") or [])
+                        if (p := parse_listing_property(entry)) is not None},
             image_url=find_item_image(listing.get("item") or {}) or find_item_image(listing, restricted=True),
             item_category=listing_category(listing, listing.get("item") or {}, {
                 p.name: p for p in (
@@ -922,6 +976,8 @@ class TraderieClient:
                     notificationID=n["id"], text=n["message"], date=n["created_at"],
                     fromUserID=_int(n.get("from_user_id")),
                     listingID=_int((n.get("data") or {}).get("listing_id")),
+                    offerID=_int((n.get("data") or {}).get("offer_id")),
+                    read=n.get("read") if isinstance(n.get("read"), bool) else (not n["new"] if isinstance(n.get("new"), bool) else None),
                 ))
             except (KeyError, TypeError, AttributeError):
                 logger.warning("Notificação com formato inesperado: %r", n)

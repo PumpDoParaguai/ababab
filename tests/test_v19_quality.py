@@ -23,6 +23,6 @@ class OfferClassificationTests(TestCase):
     def test_js_guard_requires_selected_item(self):
         js=(Path(__file__).resolve().parents[1]/'static/app.js').read_text()
         self.assertIn('!editorMatching(editorSelected)',js)
-        self.assertIn("o.item_category && o.item_category !== 'other'",js)
+        self.assertIn("renderIncomingOffer",js)
         self.assertNotIn("item.category===editorCategory || item.category==='other'",js)
 

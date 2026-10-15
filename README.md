@@ -1,10 +1,10 @@
-# Traderie CoS Assistant — v2.1.0
+# Traderie CoS Assistant — v2.2.0
 
 Painel local para anúncios de Creatures of Sonaria. Interface em português, preto neutro e azul. Projeto independente, não afiliado ao Traderie. GPL-3.0-or-later; derivado de `ImanolBarba/traderie-bot`.
 
 ## Iniciar no Windows
 
-**[Baixar Traderie CoS Assistant v2.1.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v2.1.0.zip)**
+**[Baixar Traderie CoS Assistant v2.2.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v2.2.0.zip)**
 
 1. Extraia o ZIP em uma pasta nova.
 2. Instale Python 3.10 ou superior e execute `INICIAR_WINDOWS.bat`.
@@ -62,9 +62,24 @@ Em **Anúncios → Agendamentos**, clique em **Adicionar item** e selecione iten
 
 ## Interface e outros recursos
 
-Visual em preto neutro e azul com animações de entrada, destaque ao passar o mouse, indicadores pulsantes e transições. A preferência do sistema por movimento reduzido desativa as animações. A interface se adapta ao celular e as abas podem ser navegadas por teclado.
+Visual compacto para uso pessoal, em preto neutro e azul, sem banner promocional. Mantém animações de entrada, destaque ao passar o mouse, indicadores pulsantes e transições. A preferência do sistema por movimento reduzido desativa as animações. A interface se adapta ao celular e as abas podem ser navegadas por teclado.
 
 A navegação principal tem **Anúncios** e **Usuário**, com abas **Meus anúncios** e **Agendamentos** no topo da área de anúncios. Ofertas e conversas ficam no contexto de cada anúncio. Agrupamento, exclusão com confirmação e sons opcionais permanecem disponíveis.
+
+## Notificações e ofertas
+
+O botão **Notificações**, no topo de Anúncios, abre a central da conta conectada. O servidor consulta notificações e ofertas abertas a cada 15 segundos enquanto o programa está aberto; o navegador recebe a atualização automaticamente, sem recarregar a página. Não há webhook ou conexão de eventos confirmados do Traderie.
+
+- Exibe as 50 notificações mais recentes e as ofertas abertas retornadas pelo serviço, com valores em Shooms, itens, grupos alternativos e quantidade solicitada, quando presentes na resposta.
+- Notifica novas atividades no painel, sem repetir avisos para o mesmo ID e sem avisar por todo o histórico ao conectar.
+- **Aceitar** e **Recusar** exigem confirmação. O servidor relê a oferta, confere a conta e compara os valores com a versão revisada; ofertas alteradas precisam ser revisadas novamente. Aceitar não envia uma mensagem automática.
+- **Mensagem** abre o chat existente. As notificações selecionadas podem ser marcadas como lidas no Traderie.
+- **Counter Offer no Traderie** abre o anúncio no site oficial. **A contraproposta nativa dentro do painel ainda está pendente**: falta confirmar URL, método e payload dessa ação. Não enviamos uma mensagem de chat fingindo ser contraproposta formal.
+- Falhas mantêm os últimos dados com aviso de sincronização; autenticação/anti-bot pausa as consultas e HTTP 429 respeita `Retry-After`. Reconectar limpa o estado da conta anterior.
+
+## Ícones e rótulos
+
+Os cards exibem apenas **Espécie** ou **Slot**, sem a pergunta do catálogo. A URL de ícone informada pela API tem prioridade sobre nomes de arquivo estimados. Em falhas do CDN, o pacote usa ícones locais de reserva, incluindo um símbolo próprio para Corrupt. Os ícones de reserva são ilustrações do painel, não cópias dos arquivos oficiais. O formato interno dos atributos enviado ao Traderie permanece intacto.
 
 ## Credenciais e rede
 
@@ -72,9 +87,9 @@ O token de sessão é recebido no formulário local ou por `TRADERIE_AUTH` e per
 
 Para acesso na nuvem, permita `traderie.com` e `cdn.nookazon.com` nas configurações de rede. Isso não elimina bloqueios impostos pelo próprio site. CAPTCHA e Cloudflare não são contornados.
 
-**Validação desta versão:** testes Python e de navegador cobrem oferta/preço fixo, fila, intervalo de 60 segundos, renovação após uma hora, pausa, retomada e falhas. O formato de preço fixo usa o payload real fornecido pelo usuário: `currencyGroupPrices: [{group: 0, nmt: valor, currency: true}]`, `acceptListingPrice: true` e `makeOffer: false`. Nesta revisão, o proxy do ambiente retornou 403 antes de alcançar o Traderie; escritas reais não foram executadas. As leituras de catálogo documentadas em TRADERIE_RESEARCH.md pertencem à validação anterior.
+**Validação desta versão:** 167 testes Python e 17 subtestes, testes JavaScript e testes de navegador cobrem ofertas, notificações, ações com valores revisados, ícones de reserva, preço fixo e agendamentos. O formato de preço fixo usa o payload real fornecido pelo usuário: `currencyGroupPrices: [{group: 0, nmt: valor, currency: true}]`, `acceptListingPrice: true` e `makeOffer: false`. Nesta revisão, o proxy do ambiente retornou 403 antes de alcançar o Traderie; escritas reais não foram executadas. As leituras de catálogo documentadas em TRADERIE_RESEARCH.md pertencem à validação anterior.
 
-O token fornecido não foi incorporado ao pacote. Imagens podem ser recusadas pelo CDN; nesse caso o painel mostra um marcador.
+A integração de contraproposta nativa ainda aguarda o contrato da requisição. O token fornecido não foi incorporado ao pacote. Imagens podem ser recusadas pelo CDN; nesse caso o painel mostra um marcador.
 
 ## Desenvolvimento e testes
 
@@ -89,6 +104,8 @@ Com `app.py` aberto, execute o teste de navegador (requer Chromium):
 ```bash
 CHROMIUM_PATH=/usr/bin/chromium .venv/bin/python tests/browser_smoke.py /tmp/traderie-browser
 ```
+
+Para testar a central com respostas simuladas, execute `.venv/bin/python tests/browser_inbox.py /tmp/traderie-inbox`.
 
 Para verificar somente leituras do catálogo real, execute `tests/live_catalog_smoke.py` da mesma forma, com o painel aberto.
 

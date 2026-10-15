@@ -1,15 +1,15 @@
-# Validação da v2.1.0
+# Validação da v2.2.0
 
-Ambiente: Linux, Python 3.12, Node e Chromium. Data: 15/10/2026.
+Ambiente Linux, Python 3.12, Node e Chromium. Data: 15/10/2026.
 
-- 148 testes Python e 17 subtestes aprovados.
-- Fila validada com relógio controlado: publicação inicial, separação mínima de 60 segundos, repetição a cada hora, exclusão antes da criação e modelos idênticos entre ciclos.
-- Casos de atraso, pausa durante leitura/exclusão/criação, retomada, reinício, concorrência de remoção, limitação HTTP e falhas de escrita cobertos.
-- Preço fixo validado contra o payload fornecido pelo usuário, incluindo a chave `currencyGroupPrices` e valores inválidos; preço preservado em ciclos sucessivos.
-- Teste Node de ícones e URLs aprovado.
-- Teste Chromium com APIs simuladas: oferta/preço fixo, validação do formulário, fila pelo catálogo, propriedades preservadas, iniciar/interromper, contadores, categorias, recuperação de erros, teclado e layouts desktop/celular. Animações e preferência de movimento reduzido conferidas.
-- `pip check` sem inconsistências. A interface e `/api/state` respondem HTTP 200 localmente.
+- 167 testes Python e 17 subtestes aprovados.
+- Teste Node de ícones aprovado: prioridade da URL da API, Corrupt com reserva local, rótulos simplificados e preservação dos outros atributos.
+- Teste de navegador da central aprovado: atualização automática sem recarregar, valores de ofertas, confirmar aceitação/recusa, erro de oferta desatualizada, marcação como lida, ícones com CDN indisponível, teclado e celular.
+- Teste de navegador dos fluxos anteriores aprovado: preço fixo/ofertas, catálogo, fila, iniciar/parar, contadores, categorias, movimento reduzido e desktop/celular.
+- Testes de sincronização cobrem cache, falha parcial, isolamento de conta, autenticação, Retry-After e proteção contra ações repetidas ou sobre valores modificados.
 
-Nesta revisão, o proxy retornou HTTP 403 ao tentar conectar ao Traderie. Nenhuma criação, exclusão ou republicação real foi executada, embora o usuário tenha autorizado testes na conta. O payload de preço fixo foi fornecido diretamente pelo usuário a partir do site. Os testes não garantem a aceitação de futuras escritas pelo serviço.
+Os testes de navegador simulam a API; não alteram anúncios reais. O proxy continua recusando conexão com o Traderie, portanto não houve testes reais de aceitação/recusa/notificações nesta revisão. As leituras reais registradas em TRADERIE_RESEARCH.md pertencem à v2.0.0.
 
-As consultas reais de catálogo registradas em TRADERIE_RESEARCH.md pertencem à v2.0.0. O iniciador Windows não foi executado neste ambiente Linux. O ZIP não contém credenciais, configuração local ou ambiente virtual.
+A contraproposta nativa permanece pendente de URL, método e payload. A interface oferece um link explícito ao Traderie, sem simular essa ação por mensagem. Ícones locais de reserva são desenhos do painel; arquivos oficiais inacessíveis não foram identificados como verificados.
+
+O iniciador Windows não foi executado neste ambiente Linux. O ZIP não contém credenciais, configuração local ou ambiente virtual.
