@@ -419,7 +419,8 @@ def auto_loop() -> None:
 # Ainda requerem validação ao vivo; o código jamais testa essas escritas sozinho.
 # --------------------------------------------------------------------------
 MAX_BULK_DELETE = 100
-MIN_ROTATION_MINUTES = 15
+MIN_ROTATION_MINUTES = 1
+MAX_ROTATION_MINUTES = 525600
 
 
 def save_rotations() -> None:
@@ -655,7 +656,7 @@ def api_auto_relist(client, uid):
         minutes = int(raw_minutes)
     except (ValueError, TypeError):
         raise ValueError("Informe um intervalo numérico de 5 a 1440 minutos.")
-    if not 5 <= minutes <= 1440:
+    if not 5 <= minutes <= MAX_ROTATION_MINUTES:
         raise ValueError("O intervalo deve estar entre 5 e 1440 minutos.")
     with S.lock:
         S.auto_relist = enabled
@@ -1027,8 +1028,8 @@ def api_new_rotation(client, uid):
     if not 1 <= len(name) <= 160:
         raise ValueError("Informe um nome para o item (até 160 caracteres).")
     minutes = positive_id(data.get("interval_minutes"), "Intervalo")
-    if not MIN_ROTATION_MINUTES <= minutes <= 1440:
-        raise ValueError("O timer deve ser de 15 a 1440 minutos.")
+    if not MIN_ROTATION_MINUTES <= minutes <= MAX_ROTATION_MINUTES:
+        raise ValueError("Informe de 1 a 525600 minutos inteiros.")
     with S.lock:
         if len(S.rotations) >= 20:
             raise ValueError("Máximo de 20 rotinas por conta.")
@@ -1049,8 +1050,8 @@ def api_rotation_batch(client, uid):
     if not isinstance(items, list) or not 1 <= len(items) <= 20:
         raise ValueError("Adicione entre 1 e 20 itens à fila.")
     minutes = positive_id(data.get("interval_minutes", 60), "Intervalo")
-    if not MIN_ROTATION_MINUTES <= minutes <= 1440:
-        raise ValueError("Intervalo de 15 a 1440 minutos.")
+    if not MIN_ROTATION_MINUTES <= minutes <= MAX_ROTATION_MINUTES:
+        raise ValueError("Informe de 1 a 525600 minutos inteiros.")
     rows = []
     for item in items:
         if not isinstance(item, dict):

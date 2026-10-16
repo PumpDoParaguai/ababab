@@ -236,3 +236,16 @@ def test_restart_preserves_queue_gate_but_never_reenables(setup,monkeypatch):
     assert web.S.rotation_not_before==BASE+dt.timedelta(seconds=60)
     assert web.S.rotations[0]['owned_ids']==[100]
     assert not web.S.rotations[0]['enabled']
+
+
+@pytest.mark.parametrize('minutes',[1,7,37,91,2880,525600])
+def test_custom_duration_drives_next_publication(setup,minutes):
+    api,c=setup;rows=batch(api,1,minutes);start(api);web.run_rotation_tick()
+    assert rows[0]['next_run']==(BASE+dt.timedelta(minutes=minutes)).isoformat()
+
+
+@pytest.mark.parametrize('minutes',[0,-1,1.5,True,525601])
+def test_invalid_custom_duration_rejected(setup,minutes):
+    api,c=setup
+    response=post(api,'batch',{'interval_minutes':minutes,'items':[{'item_name':'Item','template':{'item':'1','amount':'1'}}]})
+    assert response.status_code==400 and not web.S.rotations

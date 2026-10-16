@@ -1,10 +1,10 @@
-# Traderie CoS Assistant — v2.3.0
+# Traderie CoS Assistant — v2.4.0
 
 Painel local para anúncios de Creatures of Sonaria. Interface em português, preto neutro e azul. Projeto independente, não afiliado ao Traderie. GPL-3.0-or-later; derivado de `ImanolBarba/traderie-bot`.
 
 ## Iniciar no Windows
 
-**[Baixar Traderie CoS Assistant v2.3.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v2.3.0.zip)**
+**[Baixar Traderie CoS Assistant v2.4.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v2.4.0.zip)**
 
 1. Extraia o ZIP em uma pasta nova.
 2. Instale Python 3.10 ou superior e execute `INICIAR_WINDOWS.bat`.
@@ -57,7 +57,7 @@ Em **Anúncios → Agendamentos**, clique em **Adicionar item** e selecione iten
 - Excluir o anúncio remove também suas negociações. Somente os IDs criados pelo próprio agendamento são excluídos. Se um anúncio gerenciado já foi removido no site, o agendamento cria o próximo no ciclo previsto.
 - O contador avança a cada segundo e a tela consulta o estado da fila a cada 3 segundos. A opção **Ver configurações** mostra os atributos preservados.
 - Falhas de escrita pausam o item para revisão, sem repetir automaticamente uma criação incerta. Falha de autenticação/anti-bot pausa a fila; HTTP 429 adia os próximos envios conforme `Retry-After`.
-- Até 20 itens por conta; intervalos de 15 minutos a 24 horas. Se houver mais itens vencidos que a capacidade de um por minuto, eles aguardam a vez sem envios simultâneos.
+- Até 20 itens por conta; intervalos digitados livremente em minutos inteiros, de 1 minuto a 365 dias. Se houver mais itens vencidos que a capacidade de um por minuto, eles aguardam a vez sem envios simultâneos.
 - As configurações e IDs são salvos localmente. Ao reiniciar ou reconectar, os agendamentos voltam **pausados**. Retomar respeita o tempo desde a última publicação. Deixe o programa aberto e o computador acordado para executar os ciclos.
 
 ## Interface e outros recursos
@@ -113,3 +113,9 @@ Para verificar somente leituras do catálogo real, execute `tests/live_catalog_s
 O teste `browser_smoke.py` intercepta as respostas da API no navegador; ele valida seleção, payload de criação, categorias, recuperação de erros, relógios, teclado e telas de desktop/celular sem publicar anúncios reais. As imagens geradas são exemplos com dados simulados.
 
 Arquivos principais: `app.py` (servidor e automação), `traderie.py` (cliente HTTP), `static/` (interface) e `tests/` (regressões).
+
+## Novidades da v2.4.0
+
+O agendamento recebe um número de minutos digitado por você, sem menu de horários fixos: por exemplo 37, 90 ou 2880. O ciclo conta desde a publicação de cada item. A fila continua respeitando pelo menos 60 segundos entre publicações.
+
+Nas ofertas recebidas, cada item mostra quantidade, arte disponível, variante, espécie/slot, traits e mutações fornecidos pela API. Atributos do seu anúncio ficam separados dos itens que você recebe. Se a imagem não vier na oferta, o painel tenta buscá-la no catálogo; características ausentes não são inferidas do catálogo nem do nome da criatura.

@@ -794,6 +794,7 @@ function renderScheduleDraft(){
   $('schedule-save').disabled=!scheduleDraft.length;
 }
 async function saveSchedule(){
+  if(!$('schedule-minutes').reportValidity())return;
   $('schedule-save').disabled=true;
   const d=await api('/api/rotation-routines/batch','POST',{items:scheduleDraft.map(({item_name,template})=>({item_name,template})),interval_minutes:Number($('schedule-minutes').value)});
   if(!d.ok){renderScheduleDraft();return fail('rotation-status',d);}
@@ -869,6 +870,7 @@ async function loadListingOffers(id = offersForListingId) {
   offersCache=offers;
   $('listing-offers-list').innerHTML = offers.map(renderIncomingOffer).join('') || '<div class="empty-state"><strong>Nenhuma oferta aberta</strong><p>As ofertas recebidas para este anúncio aparecerão aqui.</p></div>';
   say('listing-offers-status',offers.length+' oferta(s) recebida(s).',true);
+  void resolveOfferedImages(offers);
 }
 
 function offeredSummary(o){
@@ -876,11 +878,40 @@ function offeredSummary(o){
   for(const p of o.prices||[]){if(!groups.has(p.group))groups.set(p.group,[]);groups.get(p.group).push(`${Number(p.quantity).toLocaleString('pt-BR')} × ${p.name}`);}
   return [...groups.values()].map(g=>g.join(' + ')).join(' ou ')||'Valor não informado pelo Traderie';
 }
+const offeredImageAttempts=new Set();
+let offeredImagesBusy=false;
+async function resolveOfferedImages(offers){
+  if(offeredImagesBusy)return;
+  const rows=(offers||[]).flatMap(o=>o.prices||[]);
+  const missing=[...new Set(rows.filter(p=>p.item_id&&!p.image_url&&!resolvedImages.has(String(p.item_id))&&!offeredImageAttempts.has(String(p.item_id))).map(p=>String(p.item_id)))].slice(0,24);
+  if(!missing.length)return;
+  offeredImagesBusy=true;
+  try{
+    for(let i=0;i<missing.length;i+=12){
+      const ids=missing.slice(i,i+12);ids.forEach(id=>offeredImageAttempts.add(id));
+      const d=await api('/api/item-images?ids='+encodeURIComponent(ids.join(',')));
+      if(!d.ok)continue;
+      for(const [id,url] of Object.entries(d.images||{}))if(/^\d+$/.test(id)&&imageSafe(url)){
+        resolvedImages.set(id,url);
+        document.querySelectorAll(`[data-offered-item-id="${id}"] .offered-art`).forEach(el=>{el.innerHTML=listingArt({item:rows.find(p=>String(p.item_id)===id)?.name||'Item',item_id:id,image_url:url});});
+      }
+    }
+  }finally{offeredImagesBusy=false;}
+}
+function offeredItemsHtml(o){
+  const groups=new Map();
+  for(const p of o.prices||[]){if(!groups.has(p.group))groups.set(p.group,[]);groups.get(p.group).push(p);}
+  return [...groups.values()].map(rows=>`<div class="offered-group">${rows.map(p=>{
+    const currency=p.currency===true||(!p.item_id&&p.name==='Shooms');
+    const badges=propHtml({properties:p.properties||{}});
+    return `<div class="offered-item" data-offered-item-id="${Number(p.item_id)||0}"><div class="offered-art">${currency?'<span class="offered-currency" aria-hidden="true">◈</span>':listingArt({item:p.name,item_id:p.item_id,image_url:p.image_url})}</div><div class="offered-item-detail"><strong class="offered-value">${esc(Number(p.quantity).toLocaleString('pt-BR'))} × ${esc(p.name)}</strong>${p.variant?`<small>${esc(p.variant)}</small>`:''}${currency?'':`<div class="property-list">${badges||'<small class="muted">Características não informadas pelo Traderie</small>'}</div>`}</div></div>`;
+  }).join('')}</div>`).join('<span class="offer-alternative">OU</span>')||'<span class="muted">Itens não informados pelo Traderie</span>';
+}
 function renderIncomingOffer(o){
   const summary=offeredSummary(o), id=Number(o.offerID);
   const supported=inboxData?.counter_supported===true;
   const disabled=!state.auth_set||offerActionBusy;
-  return `<article class="incoming-offer" data-incoming-offer="${id}"><div class="incoming-heading"><strong>${esc(o.itemName)}</strong><span class="muted">${Number(o.amount)}×</span></div><div class="incoming-content"><div><p class="offer-label">VOCÊ RECEBE</p><strong class="offered-value">${esc(summary)}</strong><p class="offer-buyer">${esc(o.buyerUsername||'Comprador')}</p>${o.buyer_rating!=null||o.buyer_reviews!=null?`<small class="offer-rating">${o.buyer_rating!=null?'★ '+Number(o.buyer_rating).toLocaleString('pt-BR'):''} ${o.buyer_reviews!=null?'· '+Number(o.buyer_reviews)+' avaliações':''}</small>`:''}<div class="property-list">${propHtml({properties:o.properties||{}})}</div></div><div class="incoming-actions"><button class="secondary" data-offer-chat="${id}" data-offer-chat-kind="received" ${disabled?'disabled':''}>Mensagem</button><button data-inbox-action="accept" data-offer-id="${id}" ${disabled?'disabled':''}>Aceitar</button><button class="secondary" data-inbox-action="decline" data-offer-id="${id}" ${disabled?'disabled':''}>Recusar</button>${supported?`<button class="counter-button" data-native-counter="${id}" ${disabled?'disabled':''}>Counter Offer</button>`:`<a class="counter-button external-counter" href="https://traderie.com/creaturesofsonaria/listing/${Number(o.listingID)}" target="_blank" rel="noopener noreferrer" title="A contraproposta dentro do painel ainda não está disponível">Counter Offer no Traderie ↗</a>`}</div></div><small class="offer-date" ${o.created_at?`data-updated="${esc(o.created_at)}" data-time-prefix="Recebida "`:''}>${o.created_at?'Recebida '+esc(timeAgo(o.created_at)):''}</small><div class="status" data-offer-action-status="${id}" role="status"></div></article>`;
+  return `<article class="incoming-offer" data-incoming-offer="${id}"><div class="incoming-heading"><strong>${esc(o.itemName)}</strong><span class="muted">${Number(o.amount)}×</span></div>${Object.keys(o.properties||{}).length?`<div class="listing-offer-properties"><small class="muted">Seu anúncio</small><div class="property-list">${propHtml({properties:o.properties})}</div></div>`:''}<div class="incoming-content"><div><p class="offer-label">VOCÊ RECEBE</p>${offeredItemsHtml(o)}<p class="offer-buyer">${esc(o.buyerUsername||'Comprador')}</p>${o.buyer_rating!=null||o.buyer_reviews!=null?`<small class="offer-rating">${o.buyer_rating!=null?'★ '+Number(o.buyer_rating).toLocaleString('pt-BR'):''} ${o.buyer_reviews!=null?'· '+Number(o.buyer_reviews)+' avaliações':''}</small>`:''}</div><div class="incoming-actions"><button class="secondary" data-offer-chat="${id}" data-offer-chat-kind="received" ${disabled?'disabled':''}>Mensagem</button><button data-inbox-action="accept" data-offer-id="${id}" ${disabled?'disabled':''}>Aceitar</button><button class="secondary" data-inbox-action="decline" data-offer-id="${id}" ${disabled?'disabled':''}>Recusar</button>${supported?`<button class="counter-button" data-native-counter="${id}" ${disabled?'disabled':''}>Counter Offer</button>`:`<a class="counter-button external-counter" href="https://traderie.com/creaturesofsonaria/listing/${Number(o.listingID)}" target="_blank" rel="noopener noreferrer" title="A contraproposta dentro do painel ainda não está disponível">Counter Offer no Traderie ↗</a>`}</div></div><small class="offer-date" ${o.created_at?`data-updated="${esc(o.created_at)}" data-time-prefix="Recebida "`:''}>${o.created_at?'Recebida '+esc(timeAgo(o.created_at)):''}</small><div class="status" data-offer-action-status="${id}" role="status"></div></article>`;
 }
 function offerById(id){return inboxData?.offers?.find(o=>Number(o.offerID)===id)||offersCache.find(o=>Number(o.offerID)===id);}
 function offerStatus(id,message,ok=false){document.querySelectorAll(`[data-offer-action-status="${id}"]`).forEach(el=>{el.textContent=message;el.className='status '+(ok?'ok':'err');});}
@@ -964,7 +995,7 @@ async function syncInbox(){
     if(inboxInitialized&&fresh.length){showToast('Nova atividade no Traderie. Abra Notificações.',true);uiTone();}
     for(const id of ids)inboxSeen.add(id);
     if(inboxSeen.size>2000)inboxSeen=new Set(ids);
-    inboxInitialized=true;inboxData=d;renderInbox();
+    inboxInitialized=true;inboxData=d;renderInbox();void resolveOfferedImages(d.offers);
   }finally{inboxBusy=false;}
 }
 function openInbox(){

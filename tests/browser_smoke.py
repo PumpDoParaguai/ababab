@@ -160,9 +160,10 @@ with sync_playwright() as p:
     expect(page.locator('#editor-price-field')).to_be_hidden()
     page.locator('#editor-submit').click()
     expect(page.locator('.draft-row')).to_have_count(2)
+    page.locator('#schedule-minutes').fill('37')
     page.locator('#schedule-save').click()
     expect(page.locator('.rotation-card')).to_have_count(2)
-    assert scheduled[0]['interval_minutes']==60
+    assert scheduled[0]['interval_minutes']==37
     first=scheduled[0]['items'][0]['template']
     assert first['amount']=='3' and first['properties'][1]['string']=='Weight'
     assert first['currencyGroupPrices'][0]['nmt']==1500

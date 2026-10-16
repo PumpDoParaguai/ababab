@@ -26,7 +26,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -428,13 +428,14 @@ def offer_prices(raw: dict) -> list:
     """Keep offered amounts/items, not market valuations or arbitrary response data."""
     import math
     result = []
-    rows = raw.get("prices") or raw.get("currencyGroupPrices") or []
+    rows = raw.get("prices") or raw.get("currencyGroupPrices") or raw.get("items") or []
     if not isinstance(rows, list):
         rows = []
     for row in rows[:100]:
         if not isinstance(row, dict):
             continue
         group = _int(row.get("group")) or 0
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
         if row.get("nmt") is not None:
             quantity, name = row["nmt"], "Shooms"
         else:
@@ -447,8 +448,23 @@ def offer_prices(raw: dict) -> list:
             continue
         if isinstance(quantity, bool) or not math.isfinite(value) or value <= 0 or not isinstance(name, str):
             continue
+        # Attributes belong to each offered instance, not to the seller's listing
+        # or the catalog's property definitions (which include unselected options).
+        properties = {}
+        for key in ("properties", "offerProps"):
+            entries = row.get(key)
+            if isinstance(entries, list):
+                for entry in entries:
+                    parsed = parse_listing_property(entry)
+                    if parsed is not None:
+                        properties[parsed.name] = asdict(parsed)
+        variant = row.get("variant") if isinstance(row.get("variant"), dict) else {}
+        currency = row.get("currency") is True or row.get("nmt") is not None or (not item and not row.get("item_id") and name == "Shooms")
         result.append({"group": group, "quantity": int(value) if value.is_integer() else value,
-                       "name": name[:180], "image_url": find_item_image(row)})
+                       "name": name[:180], "image_url": find_item_image(variant) or find_item_image(row),
+                       "item_id": _int(row.get("item_id")) or _int(item.get("id")),
+                       "currency": currency, "properties": properties,
+                       "variant": str(variant.get("name") or row.get("variant_name") or "")[:180]})
     if not result and raw.get("nmt") is not None:
         return offer_prices({"currencyGroupPrices": [{"nmt": raw["nmt"], "group": 0}]})
     return result

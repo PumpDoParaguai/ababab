@@ -33,6 +33,7 @@ def route_api(route):
             if n['notificationID'] in marked[-1]['ids']:n['read']=True
         data={'ok':True}
     elif path=='/api/listings/9/offers':data={'ok':True,'offers':offers}
+    elif path=='/api/item-images':data={'ok':True,'images':{'123':'https://cdn.example.test/keruku.svg'}}
     elif path=='/api/listings':data={'ok':True,'listings':[],'checked_at':now}
     elif path=='/api/rotation-routines':data={'ok':True,'routines':[]}
     elif path=='/api/offers/chat':data={'ok':True,'messages':[],'conversation_exists':True,'partner_username':'Comprador','partner_id':7}
@@ -45,6 +46,7 @@ with sync_playwright() as p:
     errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.route('**/api/**',route_api)
     page.route('https://**/*',lambda r:r.abort()) # Every CDN failure must resolve to the packaged icon.
+    page.route('https://cdn.example.test/keruku.svg',lambda r:r.fulfill(content_type='image/svg+xml',body='<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60"><circle cx="30" cy="30" r="25" fill="#3478ff"/></svg>'))
     page.goto('http://127.0.0.1:8765')
     expect(page.locator('#inbox-badge')).to_have_text('1')
     assert page.locator('.market-heading').count()==0
@@ -81,9 +83,18 @@ with sync_playwright() as p:
     page.locator('[data-inbox-action="accept"]').click()
     expect(page.locator('#inbox-offers .incoming-offer')).to_have_count(0)
     assert actions[-1]=={'offer_id':11,'action':'accept','confirm':True,'revision':'rev-11'}
-    offers.append({'offerID':12,'listingID':9,'buyerID':8,'sellerID':42,'buyerUsername':'Comprador B','itemName':'Mijusuima','itemID':55,'amount':1,'prices':[{'group':0,'quantity':12,'name':'Shooms'}],'properties':properties,'created_at':now,'revision':'rev-12'})
+    offers.append({'offerID':12,'listingID':9,'buyerID':8,'sellerID':42,'buyerUsername':'Comprador B','itemName':'Mijusuima','itemID':55,'amount':1,'prices':[{'group':0,'quantity':1,'name':'Keruku','item_id':123,'image_url':None,'properties':{'mode':{'name':'Species or Slot?','value':'Slot','type':'string'},'traits':{'name':'Traits','value':'Health, Stamina Regen','type':'string'},'mutation':{'name':'Corrupt','value':'True','type':'bool'}}}],'properties':properties,'created_at':now,'revision':'rev-12'})
     page.locator('#inbox-refresh').click()
     expect(page.locator('#inbox-offers .incoming-offer')).to_have_count(1)
+    received=page.locator('.offered-item')
+    expect(received).to_contain_text('1 × Keruku')
+    expect(received.locator('.offered-art img')).to_have_attribute('src','https://cdn.example.test/keruku.svg')
+    expect(received.locator('.slot-chip')).to_have_text('Slot')
+    expect(received).to_contain_text('Health')
+    expect(received).to_contain_text('Stamina Regen')
+    expect(received).to_contain_text('Corrupt')
+    expect(received.locator('img.mutation-icon')).to_have_count(3)
+    expect(received).not_to_contain_text('Species or Slot')
     page.set_viewport_size({'width':390,'height':844})
     page.screenshot(path=str(out/'notificacoes-mobile.png'),full_page=True)
     assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')

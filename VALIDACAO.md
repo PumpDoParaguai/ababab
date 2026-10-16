@@ -1,15 +1,15 @@
-# Validação da v2.3.0
+# Validação da v2.4.0
 
-Ambiente Linux, Python 3.12, Node e Chromium. Data: 15/10/2026.
+Linux, Python 3.12, Node e Chromium. Data: 16/10/2026.
 
-- 187 testes Python e 17 subtestes aprovados.
+- 201 testes Python e 17 subtestes aprovados.
+- Intervalos livres de 1, 7, 37, 91, 2880 e 525600 minutos geram o próximo ciclo correto; valores inválidos são rejeitados antes de salvar.
+- Itens recebidos preservam atributos próprios, imagens, variantes e grupos. Características do anúncio do vendedor e definições do catálogo não são copiadas para a oferta.
+- Mudanças nas características alteram a revisão usada na confirmação da oferta.
 - Teste Node de ícones aprovado.
-- Navegador: chat com atualização automática, ordem cronológica, rascunho e rolagem preservados, falhas de envio/leitura, confirmação/cancelamento da contraproposta, revisão de valores e layout em celular.
-- Navegador: central de notificações, aceitação/recusa, oferta desatualizada, marcação como lida, ícones locais, teclado e celular.
-- Navegador: catálogo, preço fixo/ofertas, fila, iniciar/parar, contadores, categorias e movimento reduzido.
-- Contratos de contraproposta testados com e sem oferta raiz, estoque, valores inválidos, ação repetida, resposta de erro e revisão alterada.
-- Chat testado com o objeto de conversa no envio, confirmação por `messageId`, isolamento de conta, verificação de participantes e continuidade depois de fechar a oferta.
+- Chromium: salvamento com intervalo digitado de 37 minutos; Keruku recebido como Slot com Health, Stamina Regen e Corrupt; recuperação da imagem no catálogo; layout em celular.
+- Chromium: regressões de catálogo, criação, fila, notificações, aceitação/recusa, chat e Counter Offer aprovadas.
 
-Os testes de navegador simulam a API. O código público do Traderie respondeu HTTP 200 e confirmou os contratos; consultas autenticadas de ofertas e conversas responderam HTTP 403. Não foi possível validar envios reais com o token. Os resultados simulados não comprovam aceitação pelo serviço externo.
+Os testes usam respostas simuladas. O bloqueio HTTP 403 registrado na v2.3.0 não foi reavaliado nesta revisão; não houve novas escritas reais no Traderie. O iniciador Windows não foi executado neste ambiente Linux.
 
-O iniciador Windows não foi executado neste ambiente Linux. O ZIP não contém credenciais, configuração local ou ambiente virtual.
+O ZIP exclui credenciais, configurações locais e ambiente virtual. O pacote extraído também foi testado.
