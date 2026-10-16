@@ -83,7 +83,7 @@ with sync_playwright() as p:
     page.route('https://**/*',lambda route:route.abort())
     page.goto('http://127.0.0.1:8765')
     expect(page.locator('#sidebar-user')).to_have_text('Conta de teste')
-    page.locator('#btn-connect-header').click()
+    page.locator('#btn-connect-sidebar').click()
     page.locator('#login-id').fill('42')
     page.locator('#login-auth').fill('fixture-only')
     page.locator('#connect-submit').click()

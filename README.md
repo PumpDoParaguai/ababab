@@ -1,10 +1,10 @@
-# Traderie CoS Assistant — v2.4.0
+# Sonaria · Traderie CoS Assistant — v3.0.0
 
 Painel local para anúncios de Creatures of Sonaria. Interface em português, preto neutro e azul. Projeto independente, não afiliado ao Traderie. GPL-3.0-or-later; derivado de `ImanolBarba/traderie-bot`.
 
 ## Iniciar no Windows
 
-**[Baixar Traderie CoS Assistant v2.4.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v2.4.0.zip)**
+**[Baixar Traderie CoS Assistant v3.0.0 (ZIP)](https://github.com/PumpDoParaguai/ababab/raw/refs/heads/main/downloads/Traderie_CoS_Assistant_v3.0.0.zip)**
 
 1. Extraia o ZIP em uma pasta nova.
 2. Instale Python 3.10 ou superior e execute `INICIAR_WINDOWS.bat`.
@@ -119,3 +119,14 @@ Arquivos principais: `app.py` (servidor e automação), `traderie.py` (cliente H
 O agendamento recebe um número de minutos digitado por você, sem menu de horários fixos: por exemplo 37, 90 ou 2880. O ciclo conta desde a publicação de cada item. A fila continua respeitando pelo menos 60 segundos entre publicações.
 
 Nas ofertas recebidas, cada item mostra quantidade, arte disponível, variante, espécie/slot, traits e mutações fornecidos pela API. Atributos do seu anúncio ficam separados dos itens que você recebe. Se a imagem não vier na oferta, o painel tenta buscá-la no catálogo; características ausentes não são inferidas do catálogo nem do nome da criatura.
+
+## Interface Sonaria — v3.0.0
+
+- Navegação compacta e indicadores de anúncios carregados, disponibilidade, agendamentos ativos e ofertas recebidas. Os valores vêm da sessão; fontes ainda não consultadas mostram um traço.
+- Galeria com arte em destaque e modo de lista compacta. A preferência de visualização fica salva no navegador. O filtro **Disponíveis agora** funciona junto da busca, categorias e agrupamento.
+- Catálogo em grade com seleção visual e configuração ao lado. Notificações, chat, agendamentos e conexão seguem a mesma identidade em preto neutro e azul.
+- Entradas escalonadas, iluminação dos cards acompanhando o cursor, resposta visual ao clique e transições nos diálogos. **Animações** na barra lateral permite desligá-las; a preferência de movimento reduzido do sistema também é respeitada.
+- Atalhos: **/** foca a busca; **N** abre Novo anúncio quando você não está digitando nem dentro de um diálogo; **Esc** fecha o diálogo ou menu atual.
+- Layout verificado de 320 a 1440 px. Fonte Manrope incluída localmente com licença SIL OFL; nenhum serviço de fontes externo é consultado pelo painel.
+
+A direção visual usa como referências os painéis enviados pelo usuário e o site Moonshot, com implementação própria. Não incorpora marcas, saldos, preços de mercado ou imagens fictícias de criaturas dessas referências.

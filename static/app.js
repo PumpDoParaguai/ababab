@@ -12,6 +12,7 @@ let modalSelection = [];
 let modalFocusBefore = null;
 let currentPage = "market";
 let rotationCache = [];
+let rotationLoaded = false;
 let inboxData = null, inboxBusy = false, inboxFocus = null, inboxIdentity = '';
 let inboxSeen = new Set(), inboxInitialized = false, offerActionBusy = false;
 let inboxFingerprint = '', inboxNotificationFingerprint = '';
@@ -34,6 +35,7 @@ let editorPage = 0;
 let offersForListingId = null;
 let offersModalFocus = null;
 let activeListCategory = "all";
+let onlyReady = false;
 let offersCache = [];
 let editorCategory = "species";
 const MARKET_CATEGORIES = ["all","species","slots","plushies","palettes","other"];
@@ -102,6 +104,7 @@ function say(id, msg, ok = false) {
 const canUse = (ep) => !!state.configured && (state.auth_set || (state.policy || {})[ep] === "public");
 
 function applyState(s) {
+  if(`${s.slug}:${s.user_id}:${s.configured}`!==`${state.slug}:${state.user_id}:${state.configured}`){rotationCache=[];rotationLoaded=false;rotationFingerprint='';}
   const previousPermission = JSON.stringify([state.auth_set, state.policy]);
   const identity=s.auth_set?`${s.slug}:${s.user_id}`:'';
   if(identity!==inboxIdentity){
@@ -111,6 +114,7 @@ function applyState(s) {
     if(identity)setTimeout(()=>void syncInbox(),0);
   }
   state = s;
+  updateDeskOverview();
   if(editorSelected) editorPreview();
   $("auto-next").dataset.deadline=s.auto_relist ? (s.next_auto_run || "") : "";
   $("auto-next").textContent=s.auto_relist?"Verificando disponibilidade…":"Monitoramento pausado";
@@ -144,7 +148,7 @@ function applyState(s) {
 
 async function refreshState() {
   const d = await api("/api/state");
-  if (d.ok) {applyState(d.state); connectIntro(d.state);}
+  if (d.ok) {applyState(d.state); connectIntro(d.state); if(d.state.configured)void loadRotations();}
 }
 
 async function saveConfig() {
@@ -314,16 +318,36 @@ function renderCard(x) {
           <div class="listing-subtitle">Anúncio #${esc(x.id)}</div></div>
           <span class="eligibility ${statusClass}" ${!x.eligible && x.refresh_available_at ? `data-available-at="${esc(x.refresh_available_at)}"` : ""}>${esc(tag)}</span></div>
         ${props ? `<div class="listing-details"><div class="property-list always-visible">${props}</div></div>` : `<div class="listing-details muted">Sem características informadas.</div>`}
-        <div class="listing-bottom"><small class="elapsed-text" data-updated="${esc(x.updated)}">Atualizado ${esc(timeAgo(x.updated))}</small><div class="listing-actions"><a target="_blank" rel="noopener noreferrer" href="${esc(x.url)}">Abrir no site ↗</a><button data-ep="listings.refresh" data-relist="${Number(x.id)}" ${can ? "" : "disabled"}>${x.eligible ? 'Republicar' : 'Tentar relist'}</button><button class="secondary" data-fill-create="${Number(x.id)}" data-ep="listings.create" ${canUse("listings.create") ? "" : "disabled"}>Usar como modelo</button><button class="danger icon-button" data-delete-one="${Number(x.id)}" data-ep="listings.delete" ${canUse("listings.delete") ? "" : "disabled"} title="Excluir anúncio">✕</button></div></div>
+        <div class="listing-bottom"><small class="elapsed-text" data-updated="${esc(x.updated)}">Atualizado ${esc(timeAgo(x.updated))}</small><div class="listing-actions"><a target="_blank" rel="noopener noreferrer" href="${esc(x.url)}">Abrir no site ↗</a><button data-ep="listings.refresh" data-relist="${Number(x.id)}" ${can ? "" : "disabled"}>${x.eligible ? 'Republicar' : 'Tentar relist'}</button><button class="secondary" data-fill-create="${Number(x.id)}" data-ep="listings.create" ${canUse("listings.create") ? "" : "disabled"}>Usar modelo</button><button class="danger icon-button" data-delete-one="${Number(x.id)}" data-ep="listings.delete" ${canUse("listings.delete") ? "" : "disabled"} title="Excluir anúncio">✕</button></div></div>
       </div>
     </div>
   </article>`;
 }
+function updateDeskOverview(){
+  const values={'metric-listings':listingsCache.length,'metric-ready':listingsCache.filter(x=>x.eligible).length,
+    'metric-schedules':rotationLoaded?rotationCache.filter(x=>x.enabled).length:'—','metric-offers':inboxData?.offers?.length??'—'};
+  for(const [id,value] of Object.entries(values)){
+    const el=$(id);if(el&&el.textContent!==String(value)){el.textContent=String(value);el.dispatchEvent(new Event('desk-value'));}
+  }
+  $('desk-connection-dot')?.classList.toggle('online',!!state.configured);
+  if($('desk-connection-label'))$('desk-connection-label').textContent=state.auth_set?'Conta conectada':state.configured?'Somente leitura':'Desconectado';
+}
+function updateDeskNavigation(){
+  const schedule=currentPage==='market'&&marketTab==='schedules';
+  const selected=currentPage==='account'?'account':schedule?'schedules':'market';
+  for(const el of document.querySelectorAll('.nav-item')){
+    const key=el.id==='nav-schedules'?'schedules':el.dataset.page;
+    el.classList.toggle('active',key===selected);
+    if(key===selected)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');
+  }
+}
 function renderListings() {
+  updateDeskOverview();
   const filter = $("listfilter").value.trim().toLocaleLowerCase("pt-BR");
   const counts = Object.fromEntries(MARKET_CATEGORIES.map(category => [category, category === 'all' ? listingsCache.length : listingsCache.filter(x=> (x.category||'other') === category).length]));
   document.querySelectorAll('[data-cat-count]').forEach(el => { el.textContent = counts[el.dataset.catCount] ?? 0; });
   const rows = listingsCache.filter((x) => {
+    if (onlyReady && !x.eligible) return false;
     if (activeListCategory !== 'all' && (x.category || 'other') !== activeListCategory) return false;
     const haystack = [x.item, x.id, ...propEntries(x).flatMap((p) => [p.name, p.value])].join(" ").toLocaleLowerCase("pt-BR");
     return !filter || haystack.includes(filter);
@@ -396,6 +420,7 @@ function navigate(page) {
   const target = section || page;
   if (!document.querySelector(`[data-view="${target}"]`)) return;
   currentPage = target;
+  updateDeskNavigation();
   document.querySelectorAll("[data-view]").forEach((el) => {
     const showing = el.dataset.view === target;
     el.hidden = !showing;
@@ -783,7 +808,9 @@ function updateSaleMode(){
   $('editor-sale-hint').textContent=fixed?'Aceitar somente o preço informado.':'Compradores podem enviar ofertas.';
 }
 function switchMarketTab(tab){
+  if(currentPage!=='market')navigate('market');
   marketTab=tab;
+  updateDeskNavigation();
   $('market-listings').hidden=tab!=='listings';$('panel-routines').hidden=tab!=='schedules';
   document.querySelectorAll('[data-market-tab]').forEach(b=>{const active=b.dataset.marketTab===tab;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1;});
   if(tab==='schedules')void loadRotations();
@@ -812,9 +839,13 @@ async function loadRotations(){
   if(!state.configured){rotationFingerprint='';$('rotation-list').innerHTML='<div class="empty-state"><strong>Conecte sua conta</strong><p>Você pode preparar os itens do catálogo antes de conectar.</p></div>';return;}
   if(rotationLoading)return;
   rotationLoading=true;
+  const owner=`${state.slug}:${state.user_id}`;
   let d;try{d=await api('/api/rotation-routines');}finally{rotationLoading=false;}
+  if(owner!==`${state.slug}:${state.user_id}`||!state.configured)return;
   if(!d.ok)return fail('rotation-status',d);
+  rotationLoaded=true;
   rotationCache=d.routines||[];
+  updateDeskOverview();
   $('schedule-count').textContent=rotationCache.length;
   const fingerprint=JSON.stringify(d);
   if(fingerprint===rotationFingerprint)return;
@@ -957,6 +988,7 @@ async function sendNativeCounter(){
   await syncInbox();
 }
 function renderInbox(){
+  updateDeskOverview();
   const d=inboxData;
   if(!d){
     $('inbox-notifications').innerHTML='<p class="muted">Conecte sua conta para receber notificações.</p>';
