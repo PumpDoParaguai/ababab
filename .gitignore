@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-config.json
-endpoint_auth.json
-*.tmp
-.venv/
-rotation_routines.json
-item_images.json
-.pytest_cache/
